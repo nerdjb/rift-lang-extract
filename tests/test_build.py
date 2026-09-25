@@ -8,6 +8,8 @@ bytes back -- needs a game install, so it lives in
 
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import struct
 import sys
@@ -351,6 +353,72 @@ class TestFirstKey(unittest.TestCase):
     def test_invalid_is_always_first_when_present(self):
         _, t = parse(build_container(["A", "INVALID", "B"]))
         self.assertEqual(t.keys[0], "INVALID")
+
+
+# ------------------------------------------------------- guessed-slot guard
+
+KEYS = ["UI_WEAPONS", "MENU_QUIT", "UI_GREETING"]
+VALUES = ["WEAPONS", "Quit", "Hello!"]
+
+
+class TestGuessedSlotGuard(unittest.TestCase):
+    """`dump -l en-US` must not answer with a blank file.
+
+    With a mod installed the toc stops saying which container is which
+    language, so the ids come back recovered by elimination.  That is fine
+    while every container has text, and actively dangerous when the one you
+    asked for comes back empty: "empty" is exactly what the reader reports if
+    the guess picked the wrong container, and the natural reading of that is
+    "untranslated".  So `dump` used to hand back 25,034 blank rows and say
+    "fill it in" -- and filling it in would have replaced English with a copy
+    of English.
+    """
+
+    def table(self, values, verified=False, language_id=0):
+        t = parse_container(Dat(build_container(KEYS, values=values), 0))
+        t.language_id = language_id
+        t.language_verified = verified
+        return t
+
+    def guard(self, tables, target, token="en-US"):
+        from rcextract.cli import _refuse_if_guessed_slot
+        from rcextract.languages import resolve
+        return _refuse_if_guessed_slot(None, tables, resolve(token), target)
+
+    def test_an_empty_guessed_slot_is_refused(self):
+        full = self.table(dict(zip(KEYS, VALUES)))
+        empty = self.table({})
+        with self.assertRaises(SystemExit) as cm:
+            self.guard([full, empty], empty)
+        self.assertEqual(cm.exception.code, 1)
+
+    def test_the_message_names_the_slot_that_has_the_text(self):
+        full = self.table(dict(zip(KEYS, VALUES)), language_id=23)
+        empty = self.table({})
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            with self.assertRaises(SystemExit):
+                self.guard([full, empty], empty)
+        msg = err.getvalue()
+        # The user should not have to go and find it themselves.
+        self.assertIn("-l 23", msg)
+        self.assertIn(str(len(KEYS)), msg)
+        self.assertIn("wrong container", msg)
+
+    def test_an_empty_slot_with_a_confirmed_id_is_fine(self):
+        # A retail build has four genuinely empty slots, and handing back a
+        # fillable template for one of those is the whole point of `dump`.
+        # Nothing about a confirmed id should be refused.
+        full = self.table(dict(zip(KEYS, VALUES)), verified=True)
+        empty = self.table({}, verified=True, language_id=23)
+        self.guard([full, empty], empty, token="23")
+
+    def test_a_guessed_slot_with_text_is_fine(self):
+        # Every slot is unverified once a mod is installed, and 26 of them
+        # still have text.  Refusing those would break `dump -l de` for
+        # everyone who installed a mod, which is most of the point of a mod.
+        full = self.table(dict(zip(KEYS, VALUES)), verified=False)
+        self.guard([full], full)
 
 
 if __name__ == "__main__":

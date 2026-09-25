@@ -279,6 +279,29 @@ Blank values mean *untranslated*, not *empty string* — see
 blank template untouched is therefore a no-op that leaves English in place,
 rather than blanking all 25,034 strings.
 
+**…unless the empty slot is an artefact.** An installed mod repoints
+localisation slots at its own archive, so the `toc` stops saying which container
+is which language and the ids come back recovered by elimination. That is fine
+while every container has text. It is *not* fine when the slot you asked for
+comes back empty, because "empty" is exactly what the reader reports if the
+guess picked the wrong container, and the natural reading of that is
+"untranslated". So `dump` refuses rather than writing 25,034 blank rows:
+
+```
+$ rcextract dump -l en-US -o en.json
+rcextract: error: slot 0 (en-US) has no strings, and its language id is a guess
+rather than a confirmed join -- a mod has repointed some slots out of
+d/localization, so 'no strings' here means 'wrong container', not 'untranslated'.
+  This build does have text: slot 23 holds 19144 strings, and is the one to read.
+  rcextract dump --game DIR -l 23 -o out.json
+  Or uninstall the mod, which restores the confirmed join.
+```
+
+That one bit for real, on this project: after installing the Arabic mod,
+`dump -l en-US` handed back a blank template and said "fill it in". Filling it
+in would have replaced English with an identical copy of English. **Take your
+English dump before you install anything**, or dump the slot the error names.
+
 ### `get`
 
 One string, printed. Useful in scripts and for checking a single entry.
@@ -824,10 +847,10 @@ python -m unittest discover -s tests -p 'test_*.py'                        # syn
 RCEXTRACT_GAME="$GAME" python -m unittest discover -s tests -p 'test_*.py'  # + the real install
 ```
 
-227 tests. 52 need a real install and 14 more need `fonttools` + `uharfbuzz` +
+231 tests. 52 need a real install and 14 more need `fonttools` + `uharfbuzz` +
 the Noto cut, so a machine with neither extras nor the game still gets a green
-run (`Ran 218 ... OK (skipped=66)`). With a game present the suite reports
-`Ran 227 ... OK (skipped=4)`; those four are assertions about the *retail* build
+run (`Ran 222 ... OK (skipped=66)`). With a game present the suite reports
+`Ran 231 ... OK (skipped=4)`; those four are assertions about the *retail* build
 — which containers are empty, and how container offsets join to language ids —
 and they are skipped rather than bent
 when a mod has repointed those slots, because the join they rely on no longer
@@ -856,7 +879,7 @@ checks is the whole safety argument, by resolving the encoded strings the way
 the game will, one glyph per codepoint, and requiring the HarfBuzz glyph
 sequence back.
 
-Writing these found fourteen real bugs. The first six are in the container code:
+Writing these found fifteen real bugs. The first six are in the container code:
 
 - the `struct` layout for the DSAR block descriptor is 32 bytes, not 40 (`<` in
   a `struct` format suppresses padding);
@@ -897,7 +920,13 @@ Plus three in the suite and the module it tests:
   mistyped font path came back as `ModuleNotFoundError: uharfbuzz` instead of
   "no such font file" — and one test that needed no font at all errored instead
   of skipping. The path check now comes first, which is both the better error and
-  the one the test could make a promise about.
+  the one the test could make a promise about;
+- `dump -l en-US` wrote a 25,034-row **blank template** and said "fill it in"
+  once a mod was installed. See [`dump`](#dump): with the toc repointed, the
+  English slot's id is a guess, and "no strings" means "wrong container" rather
+  than "untranslated". Filling that file in would have replaced English with a
+  copy of English. `dump` and `get` now refuse, and name the slot that does hold
+  the text.
 
 The provenance claim in [docs/SOURCES.md](docs/SOURCES.md) is itself tested:
 `TestLumpTypeProvenance` asserts the nine localisation CRCs are disjoint from

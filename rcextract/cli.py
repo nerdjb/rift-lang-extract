@@ -146,6 +146,40 @@ def _write_tsv(t: StringTable, fh, template: bool = False) -> None:
         w.writerow([k, v])
 
 
+def _refuse_if_guessed_slot(args, tables, lang, t) -> None:
+    """Refuse to read a slot whose language id is a guess and has no text.
+
+    An installed mod repoints localisation slots at its own archive, so the
+    table of contents stops saying which container is which language and the
+    ids come back recovered by elimination -- right as a set, but not a
+    confirmed pairing.  That is survivable while every container still has
+    text.  It is not survivable when the table you asked for comes back
+    *empty*, because "empty" is exactly what the reader would report if the
+    guess picked the wrong container, and the natural reading of that is
+    "this language is untranslated".
+
+    So this refuses instead of writing a 25,034-row file of blanks, which is
+    the failure mode this guard exists to prevent: `dump -l en-US` after
+    installing an Arabic mod handed back a blank template and said "fill it
+    in".  Filling it in would have replaced English with an identical copy of
+    English.
+    """
+    if t.translated_count or t.language_verified:
+        return
+    fullest = max(tables, key=lambda x: x.translated_count)
+    _die(
+        "slot %d (%s) has no strings, and its language id is a guess rather "
+        "than a confirmed join -- a mod has repointed some slots out of "
+        "d/localization, so 'no strings' here means 'wrong container', not "
+        "'untranslated'.\n"
+        "  This build does have text: slot %d holds %d strings, and is the "
+        "one to read.\n"
+        "  rcextract dump --game DIR -l %d -o out.json\n"
+        "  Or uninstall the mod, which restores the confirmed join."
+        % (lang.id, lang.code, fullest.language_id, fullest.translated_count,
+           fullest.language_id))
+
+
 def cmd_dump(args) -> int:
     tables = _tables(args)
     root = _root(args)
@@ -160,6 +194,7 @@ def cmd_dump(args) -> int:
                 "language": t.language.name,
                 "key_count": t.key_count,
                 "translated": t.translated_count,
+                "verified": t.language_verified,
                 "entries": [[k, v] for k, v in t.items()],
             })
         _ensure_parent(out)
@@ -177,6 +212,7 @@ def cmd_dump(args) -> int:
              % (lang.id, len(tables)))
 
     t = tables[lang.id]
+    _refuse_if_guessed_slot(args, tables, lang, t)
     # An empty slot is a translation job waiting to be done, so hand back a
     # fillable template rather than a file with no rows in it.
     template = args.template or not t.translated_count
@@ -218,6 +254,7 @@ def cmd_get(args) -> int:
     except KeyError as e:
         _die(str(e))
     t = tables[lang.id]
+    _refuse_if_guessed_slot(args, tables, lang, t)
     if args.key not in t:
         _die("no such key %r (table has %d keys)" % (args.key, t.key_count))
     v = t.get(args.key)
