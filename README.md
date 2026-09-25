@@ -94,9 +94,11 @@ read any localisation data at all. If it is somehow absent the error says so:
 DsarError: block 0 needs LZ4. Install it with: pip install lz4
 ```
 
-Some *other* game archives (`d/config`, `d/userinterface`) use NVIDIA
-GDeflate, which needs a native decoder. `rcextract` does not implement one and
-does not need it — it only reads localisation data.
+`rcextract` needs no native decoder. 62 of the archives in `d/` use NVIDIA
+GDeflate, but **the three an Arabic mod would have to touch are all pure LZ4**:
+`d/localization` (281/281), `d/config` (48/48), `d/userinterface` (176/176).
+GDeflate only appears in the texture and impostor archives, which a text mod
+never opens.
 
 To run the tests, or to regenerate the lump-type table from its upstream
 source, see [docs/SOURCES.md](docs/SOURCES.md).

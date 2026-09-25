@@ -186,6 +186,17 @@ Stated plainly so nobody builds on it as fact.
   [The Arabic logo](#the-arabic-logo-an-image-not-text)). Which of the four
   slot numbers it is, is not recorded anywhere. Settling it needs a probe
   string written into one slot and the game launched.
+* **That Arabic is selectable in the game.** It is not, today. The language
+  settings dropdown in `d/config` is a `UIOptionTypeSettingList` table of 23
+  entries, each pairing a `kLanguage*` enum with the `LANGUAGE_*` key that
+  names it (English, English UK, Danish, Dutch, Finnish, French, German,
+  Italian, Japanese, Korean, Norwegian, Polish, Portuguese, Russian, Spanish,
+  Swedish, Brazilian Portuguese, Latin Spanish, Chinese Traditional, Chinese
+  Simplified, Czech, Hungarian, Greek). **Arabic is not among them.** Filling a
+  text slot would therefore not be enough on its own — the dropdown in
+  `d/config` would also have to be extended, or the player has no way to select
+  the language they have just been given. That makes an Arabic mod a
+  three-archive change, not a one-archive change.
 * **That four named languages map to the four empty slots.** Six of the 33
   `LANGUAGE_*` keys have no text table: Arabic, Canadian French, Indonesian,
   Thai, Vietnamese, Mexican Spanish. Six names, four slots, so at least two
@@ -198,10 +209,20 @@ Stated plainly so nobody builds on it as fact.
   rebuilding every subsequent container, regenerating the offset tables,
   patching the TOC `offset`/`size` fields and re-compressing the DSAR.
   Overstrike and ripped_apart do all of that already.
-* **GDeflate.** `d/config` and `d/userinterface` use NVIDIA GDeflate, which
-  needs a native decoder. `rcextract` does not implement it and does not need
-  it — localisation is pure LZ4. Other archives are out of scope, not
-  supported-but-broken.
+* **GDeflate is not a problem for a text mod.** 62 of the archives in `d/`
+  contain GDeflate blocks, which needs a native decoder that `rcextract` does
+  not implement. But the three archives an Arabic mod must write are all pure
+  LZ4, measured by reading every block descriptor:
+
+  | archive | blocks | modes |
+  |---|---|---|
+  | `d/localization` | 281 | `lz4=281` |
+  | `d/config` | 48 | `lz4=48` |
+  | `d/userinterface` | 176 | `lz4=176` |
+
+  GDeflate appears only in the texture and impostor archives (`tex_*`,
+  `impostors_*`), which a text mod never opens. So no native code is needed to
+  ship Arabic.
 
 ---
 
