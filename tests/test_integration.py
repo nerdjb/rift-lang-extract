@@ -19,6 +19,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from rcextract.dat import Dat, scan_containers  # noqa: E402
 from rcextract.game import (  # noqa: E402
     GameNotFound,
     find_game_root,
@@ -26,7 +27,14 @@ from rcextract.game import (  # noqa: E402
     load_localization,
     read_localization_blob,
 )
+from rcextract.lang import parse_container  # noqa: E402
 from rcextract.languages import EMPTY_SLOTS  # noqa: E402
+from rcextract.lump_types import (  # noqa: E402
+    LUMP_LANG_KEY_ALT,
+    LUMP_LANG_KEY_HASH,
+    LUMP_LANG_VALUES,
+    LUMP_LANG_VALUE_OFF,
+)
 from rcextract.toc import Toc  # noqa: E402
 
 
@@ -240,6 +248,127 @@ class TestCliAgainstRealArchive(unittest.TestCase):
         self.assertIn("Canadian French", out)
         self.assertIn("Mexican Spanish", out)
         self.assertIn("Arabic", out)
+
+
+class TestWriterRoundTrip(unittest.TestCase):
+    """The writer is only trustworthy if it can reproduce the game byte for byte.
+
+    Rebuilding a shipped container with no edits and getting the identical
+    bytes back proves the serialiser, the entry ordering, the key hash and
+    the section layout all at once.  Any one of them being wrong would show
+    up as a diff, and a diff is the difference between "the writer is
+    broken" and "the translation is wrong" -- so this is the test that has to
+    pass before a single Arabic string goes anywhere near the format.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.blob = read_localization_blob(GAME)
+        cls.containers = scan_containers(cls.blob)
+
+    def test_all_containers_rebuild_byte_identically(self):
+        from rcextract.build import build_from_table
+        self.assertEqual(len(self.containers), 32)
+        for c in self.containers:
+            with self.subTest(offset=c.base):
+                raw = self.blob[c.base:c.base + c.file_size]
+                self.assertEqual(build_from_table(parse_container(c)), raw)
+
+    def test_key_hashes_match_the_games_own_table(self):
+        """key_hash() is reverse-engineered; the game already ships the answer.
+
+        Lump 0x06a58050 holds the hash of every key in every language, so it
+        is a 25,034-entry oracle for the hash function.
+        """
+        from rcextract.build import key_hash
+        for c in self.containers:
+            table = c.u32_array(LUMP_LANG_KEY_HASH)
+            keys = parse_container(c).keys
+            self.assertEqual(len(table), len(keys))
+            for i, k in enumerate(keys):
+                if table[i] != key_hash(k):
+                    self.fail("key %r hashes to %#010x, game says %#010x"
+                              % (k, key_hash(k), table[i]))
+
+    def test_sorted_hash_table_really_is_sorted(self):
+        for c in self.containers:
+            s = list(c.u32_array(LUMP_LANG_KEY_ALT))
+            self.assertEqual(s, sorted(s), "container at %d" % c.base)
+
+    def test_entry_zero_is_invalid(self):
+        for c in self.containers:
+            self.assertEqual(parse_container(c).keys[0], "INVALID")
+
+    def test_keys_are_ordinal_after_the_first(self):
+        for c in self.containers:
+            keys = parse_container(c).keys[1:]
+            self.assertEqual(keys, sorted(keys, key=lambda s: s.encode("utf-16-be")))
+
+    def test_every_container_shares_one_key_list(self):
+        first = parse_container(self.containers[0]).keys
+        for c in self.containers[1:]:
+            self.assertEqual(parse_container(c).keys, first)
+
+    def test_writing_a_new_language_keeps_the_key_list(self):
+        """A container built from the retail key list must accept that exact
+        key set -- that is what a new language slot will be."""
+        from rcextract.build import build_container  # noqa: F811
+        template = parse_container(self.containers[0])
+        raw = build_container(template.keys, {"INVALID": None, "UI_WEAPONS": "\u0627\u0644\u0633\u0644\u0627\u062d"})
+        out = parse_container(Dat(raw))
+        self.assertEqual(out.keys, template.keys)
+        self.assertEqual(out.get("UI_WEAPONS"), "\u0627\u0644\u0633\u0644\u0627\u062d")
+        self.assertIsNone(out.get("MENU_DIFFICULTY_TITLE"))
+
+    def test_untranslated_entries_fall_back_rather_than_blanking(self):
+        """A partial translation must leave the rest of the table untranslated,
+        so the game falls back to English instead of showing nothing."""
+        from rcextract.build import build_container  # noqa: F811
+        template = parse_container(self.containers[0])
+        raw = build_container(template.keys, {"INVALID": None, "UI_WEAPONS": "x"})
+        offsets = Dat(raw).u32_array(LUMP_LANG_VALUE_OFF)
+        table = parse_container(Dat(raw))
+        blank = [k for k, o in zip(table.keys, offsets)
+                 if o == 0 and k != "INVALID"]
+        self.assertEqual(len(blank), len(template.keys) - 2)
+
+    def test_flag_bytes_are_a_property_of_the_key_not_the_language(self):
+        """Lump 0xb0653243 is per-entry metadata, and it is *identical* in all
+        32 containers -- 5,889 keys carry the value 2.  So it cannot be
+        hardcoded to zero when writing, or those entries change meaning.  What
+        the flag means is not established; the keys that carry it look like
+        voice-over cue names, but that is a guess."""
+        ref = None
+        for c in self.containers:
+            t = parse_container(c)
+            nz = tuple(f for f in t.flags)
+            if ref is None:
+                ref = nz
+                self.assertEqual(sum(1 for f in nz if f), 5889)
+            self.assertEqual(nz, ref, "container at %d differs" % c.base)
+        self.assertEqual(len(ref), 25034)
+
+    def test_flag_padding_is_always_zero(self):
+        for c in self.containers:
+            raw = c.lump(0xb0653243)
+            self.assertEqual(set(raw[25034:]), {0}, "container at %d" % c.base)
+
+    def test_empty_slots_have_a_one_byte_value_blob(self):
+        """The four unassigned slots are the model for a new language: all
+        25,034 keys present, every value offset zero, one NUL of payload."""
+        from rcextract.languages import EMPTY_SLOTS
+        ids = language_ids_from_toc(GAME, self.blob)
+        self.assertIsNotNone(ids)
+        slot_of = {id(c): lid for c, lid in zip(self.containers, ids)}
+        empty = 0
+        for c in self.containers:
+            t = parse_container(c)
+            if slot_of[id(c)] in EMPTY_SLOTS:
+                empty += 1
+                self.assertEqual(t.translated_count, 0)
+                self.assertEqual(c.lump(LUMP_LANG_VALUES), b"\x00")
+                self.assertEqual(set(c.u32_array(LUMP_LANG_VALUE_OFF)), {0})
+        self.assertEqual(empty, len(EMPTY_SLOTS))
 
 
 if __name__ == "__main__":

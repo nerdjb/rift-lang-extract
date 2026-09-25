@@ -41,6 +41,7 @@ from .lump_types import (
     LUMP_LANG_KEY_OFF,
     LUMP_LANG_VALUES,
     LUMP_LANG_VALUE_OFF,
+    LUMP_LANG_ZERO,
 )
 
 
@@ -62,6 +63,12 @@ class StringTable:
     """Position of this container in the archive blob (not the language id)."""
     language_verified: bool = True
     """False when the language id is a guess (no usable table of contents)."""
+    flags: list[int] = field(default_factory=list, repr=False)
+    """Per-entry flag byte (lump 0xb0653243).
+
+    Zero throughout every retail language except the two Portuguese ones, so
+    a writer must carry it through rather than assume zero.
+    """
     _index: dict[str, int] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
@@ -169,6 +176,10 @@ def parse_container(container: Dat) -> StringTable:
         o = val_off[i]
         values.append(None if o == 0 else dec(_cstr(val_blob, o)))
 
+    # Lump 0xb0653243 is one flag byte per entry followed by 3N zero bytes.
+    raw_flags = container.get(LUMP_LANG_ZERO, b"")
+    flags = list(raw_flags[:n]) if len(raw_flags) >= n else [0] * n
+
     return StringTable(
         language_id=0,  # caller assigns once it knows the slot order
         offset=container.base,
@@ -176,6 +187,7 @@ def parse_container(container: Dat) -> StringTable:
         key_count=n,
         keys=keys,
         values=values,
+        flags=flags,
     )
 
 
