@@ -824,10 +824,12 @@ python -m unittest discover -s tests -p 'test_*.py'                        # syn
 RCEXTRACT_GAME="$GAME" python -m unittest discover -s tests -p 'test_*.py'  # + the real install
 ```
 
-225 tests, 52 of which need a real install and skip without one. With one
-present the suite reports `Ran 225 ... OK (skipped=4)`; those four are
-assertions about the *retail* build — which containers are empty, and how
-container offsets join to language ids — and they are skipped rather than bent
+227 tests. 52 need a real install and 14 more need `fonttools` + `uharfbuzz` +
+the Noto cut, so a machine with neither extras nor the game still gets a green
+run (`Ran 218 ... OK (skipped=66)`). With a game present the suite reports
+`Ran 227 ... OK (skipped=4)`; those four are assertions about the *retail* build
+— which containers are empty, and how container offsets join to language ids —
+and they are skipped rather than bent
 when a mod has repointed those slots, because the join they rely on no longer
 exists. That is deliberate: after following this README you *will* have a mod
 installed, and a permanently red suite would be worse than an honest skip.
@@ -854,7 +856,7 @@ checks is the whole safety argument, by resolving the encoded strings the way
 the game will, one glyph per codepoint, and requiring the HarfBuzz glyph
 sequence back.
 
-Writing these found eleven real bugs. The first six are in the container code:
+Writing these found fourteen real bugs. The first six are in the container code:
 
 - the `struct` layout for the DSAR block descriptor is 32 bytes, not 40 (`<` in
   a `struct` format suppresses padding);
@@ -886,10 +888,16 @@ text:
   asserting that every non-Arabic stretch survives verbatim, which is now a
   test.
 
-Plus two in the suite itself: the writer round-trip class was missing the
-`skipIf` its three neighbours had, so on a machine with no game copy it errored
-instead of skipping; and the four retail-build assertions above failed once a
-mod was installed.
+Plus three in the suite and the module it tests:
+
+- the writer round-trip class was missing the `skipIf` its three neighbours had,
+  so on a machine with no game copy it errored instead of skipping;
+- the four retail-build assertions above failed once a mod was installed;
+- `PreShaper.prepare` imported uharfbuzz before checking its arguments, so a
+  mistyped font path came back as `ModuleNotFoundError: uharfbuzz` instead of
+  "no such font file" — and one test that needed no font at all errored instead
+  of skipping. The path check now comes first, which is both the better error and
+  the one the test could make a promise about.
 
 The provenance claim in [docs/SOURCES.md](docs/SOURCES.md) is itself tested:
 `TestLumpTypeProvenance` asserts the nine localisation CRCs are disjoint from

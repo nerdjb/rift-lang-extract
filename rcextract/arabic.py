@@ -572,11 +572,21 @@ class PreShaper:
         :meth:`encode`; a run that was not prepared here raises rather than
         quietly coming out unshaped.
         """
+        if self._prepared:
+            return self
+
+        # Check the arguments before importing anything.  A caller who points at
+        # the wrong path should be told that, not told to install a package.
+        for label, fonts in (("base", self._base), ("Noto", self._noto)):
+            for style, font in fonts.items():
+                if not isinstance(font, (bytes, bytearray, memoryview)) \
+                        and not os.path.isfile(font):
+                    raise ShapeError("no such %s font file for style %r: %s"
+                                     % (label, style, font))
+
         import uharfbuzz as hb
         from fontTools.ttLib import TTFont
 
-        if self._prepared:
-            return self
         texts = list(texts)
         # Subset the Arabic to what is actually used, plus every presentation
         # form: the encoded strings name the forms, so they have to be in the

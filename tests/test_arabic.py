@@ -447,10 +447,33 @@ class ShapeErrorTests(unittest.TestCase):
             PreShaper({}, {})
 
     def test_missing_font_file_is_reported(self):
+        # Checked before anything is imported, so this holds on a machine with
+        # neither fontTools nor uharfbuzz -- and a caller who mistypes a path is
+        # told so, rather than told to install a package.
         shaper = PreShaper({"regular": "/nonexistent.ttf"},
                            {"regular": "/nonexistent2.ttf"})
-        with self.assertRaisesRegex(ShapeError, "no such font file"):
+        with self.assertRaisesRegex(ShapeError, "no such base font file"):
             shaper.prepare(["ابت"])
+
+    def test_a_missing_noto_font_is_reported_too(self):
+        # __file__ stands in for a base font that does exist: only the path
+        # check runs here, and the base is checked before the Noto cut.
+        shaper = PreShaper({"regular": __file__}, {"regular": "/nonexistent.ttf"})
+        with self.assertRaisesRegex(ShapeError, "no such Noto font file"):
+            shaper.prepare(["ابت"])
+
+    def test_font_bytes_are_not_checked_as_paths(self):
+        # A font handed over as bytes has no path to check, and that is the
+        # normal case here: extract_ui_fonts reads the font out of the game.  So
+        # the bytes must get past the path check and fail later, on being
+        # nonsense, rather than being reported as a missing file.
+        try:
+            PreShaper({"regular": b"not a ttf"},
+                      {"regular": b"nor this"}).prepare(["ابت"])
+        except ShapeError as exc:
+            self.fail("bytes were rejected as a path: %s" % exc)
+        except Exception:
+            pass    # fontTools or HarfBuzz had its own opinion, which is fine
 
 
 # -- the real pipeline -------------------------------------------------------
