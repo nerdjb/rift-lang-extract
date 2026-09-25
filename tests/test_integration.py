@@ -49,6 +49,25 @@ def _game() -> str | None:
 GAME = _game()
 
 
+def _moved_slots() -> list:
+    """Localisation slots whose toc entry no longer points into d/localization."""
+    return moved_localization_slots(GAME) if GAME else []
+
+
+MOVED = _moved_slots()
+
+# Several tests below join container offsets in d/localization to language ids
+# from the toc.  That join only exists while the toc still points every
+# localisation container into d/localization, so an installed mod -- which
+# repoints some of them at its own archive -- makes them unobservable.  They are
+# statements about the retail build, so they are skipped rather than bent.
+needs_unmodified_toc = unittest.skipIf(
+    bool(MOVED),
+    "an installed mod has repointed slot(s) %s, so container offsets can no "
+    "longer be joined to language ids; these are retail-build facts"
+    % ", ".join(str(s) for s in MOVED))
+
+
 @unittest.skipIf(GAME is None, "no Rift Apart install found (set RCEXTRACT_GAME)")
 class TestRealArchive(unittest.TestCase):
     @classmethod
@@ -74,9 +93,12 @@ class TestRealArchive(unittest.TestCase):
         # so the ids come back recovered-by-elimination instead: right as a
         # set, but not confirmed.  Both are acceptable; the *reason* is not,
         # which is why the unverified case is only allowed with a mod present.
-        moved = moved_localization_slots(GAME)
-        if moved:
-            self.assertEqual(moved, sorted(EMPTY_SLOTS))
+        if MOVED:
+            # A mod claims the four reserved slots, and may also claim the two
+            # English ones so the game finds Arabic where it already looks.
+            self.assertTrue(set(EMPTY_SLOTS) <= set(MOVED),
+                            "the reserved slots should be claimed first: %s"
+                            % MOVED)
             self.assertFalse(all(t.language_verified for t in self.tables))
         else:
             self.assertTrue(all(t.language_verified for t in self.tables),
@@ -97,6 +119,7 @@ class TestRealArchive(unittest.TestCase):
             self.assertEqual(t.code, code, "slot %d is %s, expected %s" % (slot, t.code, code))
             self.assertEqual(t.get("UI_WEAPONS"), expected)
 
+    @needs_unmodified_toc
     def test_four_slots_are_empty(self):
         empty = sorted(t.language_id for t in self.tables if not t.translated_count)
         self.assertEqual(empty, sorted(EMPTY_SLOTS))
@@ -195,6 +218,7 @@ class TestCliAgainstRealArchive(unittest.TestCase):
             rc = main(["--game", GAME, *argv])
         return rc, buf.getvalue()
 
+    @needs_unmodified_toc
     def test_list_runs(self):
         rc, out = self.run_cli("list")
         self.assertEqual(rc, 0)
@@ -212,6 +236,7 @@ class TestCliAgainstRealArchive(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(out.strip(), "WAFFEN")
 
+    @needs_unmodified_toc
     def test_get_from_empty_slot_reports_untranslated(self):
         rc, out = self.run_cli("get", "-l", "23", "-k", "UI_WEAPONS")
         self.assertEqual(rc, 1)
@@ -365,6 +390,7 @@ class TestWriterRoundTrip(unittest.TestCase):
             raw = c.lump(0xb0653243)
             self.assertEqual(set(raw[25034:]), {0}, "container at %d" % c.base)
 
+    @needs_unmodified_toc
     def test_empty_slots_have_a_one_byte_value_blob(self):
         """The four unassigned slots are the model for a new language: all
         25,034 keys present, every value offset zero, one NUL of payload."""

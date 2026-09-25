@@ -26,6 +26,10 @@ dependencies = ["lz4>=4.0"]
 
 [project.optional-dependencies]
 test = ["pytest>=7"]
+# Building the Arabic localisation: a real shaper (uharfbuzz) and a font
+# editor (fonttools).  Only :mod:`rcextract.arabic` and
+# tools/build_arabic_mod.py need these -- reading the game's files does not.
+arabic = ["fonttools>=4.40", "uharfbuzz>=0.37"]
 
 [project.scripts]
 rcextract = "rcextract.cli:main"

@@ -92,6 +92,43 @@ def read_localization_blob(root: str, gdeflate=None) -> bytes:
     return buf
 
 
+def archive_path(root: str, archive_name: str) -> str:
+    """Resolve a toc archive name to a path under `root`.
+
+    Archive names are stored Windows-style (``d\\userinterface``) whatever
+    platform the game is running on.
+    """
+    rel = archive_name.replace("\\", os.sep).replace("/", os.sep)
+    return os.path.join(root, rel)
+
+
+def read_asset(root: str, archive_name: str, offset: int, size: int) -> bytes:
+    """Read one asset out of an archive, by byte offset and length.
+
+    The table of contents stores ``(archive index, offset, size)`` per asset;
+    this is the other half of :meth:`rcextract.toc.TocImage.set_asset_meta`, and
+    reads back what a mod wrote.  Handles the two archive layouts the game
+    uses: a DSAR-wrapped, block-compressed archive, and a flat uncompressed one
+    (which is what a mod archive is).
+    """
+    path = archive_path(root, archive_name)
+    if not os.path.isfile(path):
+        raise GameNotFound("no such file: %s" % path)
+
+    with open(path, "rb") as fh:
+        magic = fh.read(4)
+
+    if magic == b"DSAR":
+        with DsarArchive(path) as ar:
+            stream = ar.read_stream()
+            stream.seek(offset)
+            return stream.read(size)
+
+    with open(path, "rb") as fh:
+        fh.seek(offset)
+        return fh.read(size)
+
+
 def language_ids_from_toc(root: str, blob: bytes) -> list[int] | None:
     """Language id for each localisation container, in blob order.
 

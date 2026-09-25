@@ -14,6 +14,8 @@ rcextract get     # one string
 rcextract toc     # the asset index
 rcextract verify  # self-check every table
 rcextract mod     # build and install a localisation mod
+
+tools/build_arabic_mod.py   # build the Arabic mod: shaped strings + a new font
 ```
 
 ---
@@ -24,6 +26,7 @@ rcextract mod     # build and install a localisation mod
 - [Getting it](#getting-it)
 - [Commands](#commands) — one section per tool
   - [`list`](#list) · [`dump`](#dump) · [`get`](#get) · [`toc`](#toc) · [`verify`](#verify) · [`mod`](#mod)
+  - [`build_arabic_mod.py`](#build_arabic_modpy) — **start here for Arabic**
 - [Installing a mod](#installing-a-mod)
 - [End-to-end: German to Arabic](#end-to-end-german-to-arabic)
 - [How it works](#how-the-extraction-works)
@@ -69,6 +72,14 @@ That writes a `d\mods\mod1` archive and repoints four entries in the game's
 asset index. It does **not** edit `d/localization` or any other game file in
 place, and `rcextract mod uninstall` puts the index back byte-for-byte. See
 [Installing a mod](#installing-a-mod).
+
+**Arabic needs more than that**, and this is the one place where "put the
+translated strings in" is not sufficient. The game has no Arabic shaper and no
+Arabic glyphs, so a mod that only swaps the strings renders Arabic as isolated
+letters in reverse word order. `tools/build_arabic_mod.py` fixes that by shaping
+the text with HarfBuzz at build time and shipping a patched font alongside it —
+still entirely inside the mod, still no game file edited. Start at
+[`build_arabic_mod.py`](#build_arabic_modpy).
 
 The interesting part: **the game ships four language slots it never fills in**,
 and one of them is almost certainly Arabic — the game has an Arabic voice bank
@@ -137,6 +148,15 @@ read any localisation data at all. If it is somehow absent the error says so:
 
 ```
 DsarError: block 0 needs LZ4. Install it with: pip install lz4
+```
+
+**For Arabic, two more:** `fonttools` and `uharfbuzz`, plus the Noto Sans
+Arabic UI fonts from your distribution (`fonts-noto-core` on Debian and Ubuntu).
+They are an optional extra and nothing else needs them:
+
+```bash
+pip install '.[arabic]'
+sudo apt install fonts-noto-core
 ```
 
 ### Pointing it at your install
@@ -342,6 +362,129 @@ rcextract mod uninstall --game "$GAME"
 rcextract mod install   --game "$GAME" -t ar.json --dry-run
 ```
 
+That installs the *strings*. It is enough for German, French or Japanese, because
+the game's own font already has those glyphs. **For Arabic it is not enough**, and
+the reason is worth stating plainly: the engine has no Arabic shaper. See below.
+
+### `build_arabic_mod.py`
+
+This is the tool that makes Arabic actually appear as Arabic, and **it is what
+you want for Arabic** — not `rcextract mod install`.
+
+```bash
+python -m pip install fonttools uharfbuzz lz4     # or: pip install .[arabic]
+sudo apt install fonts-noto-core                  # Noto Sans Arabic UI
+
+GAME='/path/to/Ratchet & Clank - Rift Apart'
+python tools/build_arabic_mod.py --game "$GAME" ar.json
+```
+
+#### How to make the Arabic fonts show
+
+Four things have to be true at once, and missing any one of them is what makes
+Arabic render as boxes, as disconnected letters, or backwards.
+
+**1. The strings have to arrive pre-shaped.** Rift Apart maps every codepoint
+through the font's `cmap` and advances the pen left to right. There is no
+HarfBuzz call, no bidi pass, no `direction` property — Arabic in the stock
+pipeline draws as isolated letters in reverse word order, which is what
+"disconnected and backwards" means. So the shaping is done **at build time** and
+the mod ships the *result*: the tool runs HarfBuzz over every Arabic run itself,
+and writes back one codepoint per shaped glyph, already in visual order. The
+engine then has nothing left to get wrong.
+
+**2. The font has to contain those shaped glyphs.** Proxima Nova — the two
+assets the game loads for UI text — has no Arabic codepoint in it at all, so a
+new font has to ship alongside the new strings. The tool merges
+[Noto Sans Arabic UI](https://fonts.google.com/noto/specimen/Noto+Sans+Arabic+UI)
+into Proxima Nova rather than replacing it, so the game's Latin and symbol glyphs
+keep their original shapes and metrics. The "UI" cut specifically, not plain
+Noto Naskh or Noto Sans: only the UI cut's Arabic glyphs have self-contained
+single-glyph forms, which is what lets each one be addressed by its own
+codepoint.
+
+**3. Every shaped glyph needs a codepoint, including the ones Unicode has no
+name for.** 138 distinct letterforms turned up across the 716 strings. 86 of
+them have a codepoint in the Arabic Presentation Forms block, U+FE70–U+FEFF, and
+those are used. The other 52 have none, so they are given new codepoints in the
+**Supplementary Private Use Area-A**, U+F0000–U+FFFFD, and appended to the
+font's `cmap`. The BMP private-use areas are *not* usable: Proxima Nova already
+occupies U+E000–U+E800, U+F000–U+F800 and U+0100–U+0200.
+
+The same codepoint is used for a shaped glyph in both weights, paired by glyph
+*name* rather than by glyph id, so Regular and Bold do not have to agree on
+glyph order. Both patched fonts are `unitsPerEm=1000` like the originals, and
+keep the original name records.
+
+**4. The run reversal has to respect word boundaries.** A space bundled into a
+neighbouring Latin run travels to the wrong side of it when the runs are
+reversed — `PULSE 3D™` comes back as `3D™ PULSE`, and the gap between a number
+and the word it follows ends up on the far side of the number. So a gap is
+broken out as a run of its own exactly when Arabic is touching it, and left
+inside the run when it is only separating two pieces of one Latin phrase.
+
+#### The font input is not optional
+
+The tool needs the **retail** Proxima Nova, because `extract_ui_fonts` reads
+whatever the `toc` points at — and once a mod is installed that is the *patched*
+font, so rebuilding on top of it would quietly degrade (all 139 letterforms land
+in the PUA instead of 86 presentation forms plus 52 PUA). The tool detects this
+and refuses:
+
+```bash
+# retail fonts, extracted once from the pristine toc
+python tools/build_arabic_mod.py --game "$GAME" ar.json \
+    --base-font regular=regular-arabic.ttf --base-font bold=bold-arabic.ttf
+```
+
+To get them, read the two assets out of the original archive with the toc's own
+`(offset, size)` — `rcextract.toc.Toc.open("$GAME/toc.orig")`, assets **47779**
+(regular) and **75673** (bold), both bare TTFs rather than containers. Keep them
+somewhere outside the repo; they are game content.
+
+#### Options
+
+| flag | meaning |
+| --- | --- |
+| `--game DIR` | the install (found by searching upward if omitted) |
+| `--noto DIR` | where the Noto Sans Arabic UI cuts are, default `/usr/share/fonts/noto` |
+| `--base-font STYLE=PATH` | the retail font to build on, instead of the installed one; repeatable, needs `regular` and `bold` |
+| `--slots` | language slots to claim; default `0,1,23,28,29,30` |
+| `--out DIR` | *also* write the fonts, the payload and the shaped strings here |
+| `--dry-run` | build and verify everything, write nothing to the game |
+
+Builds are reproducible: set `SOURCE_DATE_EPOCH` and two runs differ only in the
+font `head` table's timestamp.
+
+#### What pre-shaping costs you
+
+Display is correct. Layout is not, and cannot be:
+
+- **The caret and selection are wrong.** The engine sees one codepoint per
+  shaped glyph, not one per character, so a cursor steps over whole ligatures and
+  marks. This matters in text-entry fields.
+- **Wrapping measures glyph boxes, not characters**, so a line can break in a
+  place a reader would not choose, especially inside a word.
+- **Kashida and justification cannot be added at render time**, because the
+  engine is not doing the rendering.
+- **No live re-shaping.** Changing a string means rebuilding the mod.
+
+That is the price of working inside an engine with no shaper, and it is the
+right trade for a front-end: menus, subtitles and item descriptions are
+read-only, and those are the overwhelming majority of what a player sees.
+
+#### Layout limitations are inherent to the approach
+
+The font carries no Arabic OpenType tables. Glyph *substitution* works, because
+that is now just a `cmap` lookup, but anything that needs the shaper at render
+time cannot work:
+
+- `liga`, `rlig` and the joining forms are already resolved into distinct
+  glyphs, so there is nothing left for them to do;
+- mark positioning is baked into the glyph the shaper chose, and is not
+  re-adjustable;
+- nothing in the font can respond to `size`, `lang` or `script` runs.
+
 ---
 
 ## Installing a mod
@@ -354,6 +497,13 @@ reimplemented in Python because Overstrike is Windows-only and .NET 7.
 **No game file is edited in place.** `d/localization` is never opened, written
 or created; the `toc` is the only retail file touched, and it is backed up to
 `toc.orig` beforehand and restored byte-for-byte on uninstall.
+
+The Arabic tool described in
+[`build_arabic_mod.py`](#build_arabic_modpy) is built on the same installer and
+follows the same rule. It repoints eight entries rather than four — the four
+reserved slots *and* the two en-US ones, so the text is reachable — plus the two
+UI font assets, which is the same operation applied to a different kind of
+asset.
 
 ### install
 
@@ -513,16 +663,26 @@ rcextract dump --game "$GAME" -l 23 --template -o translations/ar.json
 # 3. translate translations/ar.json  (or de.tsv -> ar.tsv, same format)
 
 # 4. check what will happen
-rcextract mod install --game "$GAME" -t translations/ar.json --dry-run
+python tools/build_arabic_mod.py --game "$GAME" translations/ar.json --dry-run
 
 # 5. install
-rcextract mod install --game "$GAME" -t translations/ar.json
+python tools/build_arabic_mod.py --game "$GAME" translations/ar.json
 
-# 6. launch the game, set the language, look at the menu
+# 6. launch the game, look at the front-end
 
 # 7. if it is wrong
 rcextract mod uninstall --game "$GAME"
 ```
+
+Step 4 needs the retail UI fonts the first time; see
+[`build_arabic_mod.py`](#build_arabic_modpy). Step 5 refuses to run if a patched
+font is already installed, so run step 7 before rebuilding.
+
+**Use `build_arabic_mod.py`, not `rcextract mod install`, for Arabic.**
+`rcextract mod install` only writes the strings, and Arabic needs a new font and
+pre-shaped text as well. `rcextract mod install` is the right tool for every
+other language, and the right tool for Arabic if you have already shaped the
+strings and built the fonts yourself.
 
 Step 6 is the one step this project cannot do for you. See
 [Status](#status-what-is-verified-and-what-is-not).
@@ -591,6 +751,19 @@ Your own translations are the exception — put them in
 `*.tsv` and `*.json` are ignored everywhere else in the repo precisely so that
 a stray `rcextract` dump cannot be committed by accident.
 
+That includes the Arabic. A 716-key Arabic translation and the two retail fonts
+it is built on are game-derived and translation content respectively, and
+neither is in the repository — `tools/build_arabic_mod.py` takes the translation
+as a path argument, so you point it at your own file. The **shaped** output it
+produces is not game content and would be safe to commit, but it is a build
+artefact derived from a translation, so it is left out too; `--out DIR` writes
+it wherever you want it.
+
+**No game fonts either.** The two retail Proxima Nova files are game content and
+are not in the repo. If you want to build the Arabic mod you need your own copy,
+extracted from your own install as described in
+[`build_arabic_mod.py`](#build_arabic_modpy).
+
 ---
 
 ## Sources
@@ -619,6 +792,19 @@ from Overstrike.
   against `TOC_I29.AddNewArchive`. This is the one dependency that is trusted
   rather than measured — see
   [docs/SOURCES.md](docs/SOURCES.md#4-mod-archives).
+- The **Arabic glyph shapes** come from
+  [Noto Sans Arabic UI](https://fonts.google.com/noto/specimen/Noto+Sans+Arabic+UI)
+  (SIL Open Font License 1.1), merged into the game's own Proxima Nova. The
+  shaping itself is done by **HarfBuzz** through the `uharfbuzz` binding, and the
+  fonts are edited with **fontTools** (both MIT). Both are optional extras:
+  reading the game's files needs neither.
+- The claim that **the engine does not shape Arabic** is not taken from anyone's
+  word. It is a conclusion from the format work: the string tables are a flat
+  list of key/value pairs with no run, script or direction information anywhere
+  in them, and the font has no Arabic codepoints, so there is nothing for a
+  shaper to act on. The last 140 MB of the install does contain HarfBuzz and
+  FreeType, inside `RenoirCore.WindowsDesktop.dll` — but the engine never calls
+  the shaper for this text path, which is why the mod pre-shapes instead.
 
 [docs/SOURCES.md](docs/SOURCES.md) has the full breakdown: which struct came
 from which upstream header, how each finding was established and checked, and —
@@ -638,10 +824,16 @@ python -m unittest discover -s tests -p 'test_*.py'                        # syn
 RCEXTRACT_GAME="$GAME" python -m unittest discover -s tests -p 'test_*.py'  # + the real install
 ```
 
-161 tests, 52 of which need a real install and skip without one (the suite
-reports `Ran 152 ... OK (skipped=52)` there). The synthetic ones build
-localisation containers in memory from known key/value lists and check the
-readers recover them exactly, including the
+225 tests, 52 of which need a real install and skip without one. With one
+present the suite reports `Ran 225 ... OK (skipped=4)`; those four are
+assertions about the *retail* build — which containers are empty, and how
+container offsets join to language ids — and they are skipped rather than bent
+when a mod has repointed those slots, because the join they rely on no longer
+exists. That is deliberate: after following this README you *will* have a mod
+installed, and a permanently red suite would be worse than an honest skip.
+
+The synthetic ones build localisation containers in memory from known key/value
+lists and check the readers recover them exactly, including the
 places round-trips usually break: `%d%%`, `&quot;`, `<span class=…>`, `<br>`,
 `[BTN_A]` and CJK. They also check the *writer* rebuilds all 32 shipped
 containers and the whole `toc` byte-for-byte, and that the key hash matches all
@@ -654,7 +846,15 @@ skipped when no install is found. They start from a **pristine** `toc`
 same answer whether or not you have a mod installed — which is the state you
 are in after following this README.
 
-Writing these found five real bugs:
+`tests/test_arabic.py` is in two tiers, because the two halves have very
+different requirements. The segmentation half — run splitting, markup, reversal —
+needs nothing but the standard library and is always tested. The font half needs
+`uharfbuzz`, `fontTools` and the Noto UI cut, and skips without them; what it
+checks is the whole safety argument, by resolving the encoded strings the way
+the game will, one glyph per codepoint, and requiring the HarfBuzz glyph
+sequence back.
+
+Writing these found eleven real bugs. The first six are in the container code:
 
 - the `struct` layout for the DSAR block descriptor is 32 bytes, not 40 (`<` in
   a `struct` format suppresses padding);
@@ -670,9 +870,26 @@ Writing these found five real bugs:
   than as "fall back to English", because the JSON reader kept `""` where the
   TSV reader dropped it.
 
-Plus one in the suite itself: the writer round-trip class was missing the
+And five in the Arabic path, all of which would have shipped as visibly wrong
+text:
+
+- the segmenter had a shared-mutable-class-state bug, so two `PreShaper`
+  instances in one process shared one shaper's state;
+- the two weights were paired by glyph *id* rather than glyph *name*, which
+  silently mispairs any font whose styles do not have aligned glyph orders;
+- a module-level `_CLUSTERS` cache leaked between calls;
+- a space bundled into a neighbouring Latin run travelled to the wrong side of
+  it when the runs were reversed — 144 of 716 strings;
+- and the fix for that one over-corrected, splitting *every* gap and so
+  reversing the words inside a Latin phrase. The rule that is actually right is
+  narrower: a gap is its own run only when Arabic is touching it. Caught by
+  asserting that every non-Arabic stretch survives verbatim, which is now a
+  test.
+
+Plus two in the suite itself: the writer round-trip class was missing the
 `skipIf` its three neighbours had, so on a machine with no game copy it errored
-instead of skipping.
+instead of skipping; and the four retail-build assertions above failed once a
+mod was installed.
 
 The provenance claim in [docs/SOURCES.md](docs/SOURCES.md) is itself tested:
 `TestLumpTypeProvenance` asserts the nine localisation CRCs are disjoint from
@@ -695,24 +912,48 @@ whether you should trust the output.
   `d/localization`
 - uninstall restores the `toc` to the identical bytes
 - `list`/`dump`/`verify` keep working with a mod installed
+- the Arabic build: 1,424 distinct Arabic runs shaped, 138 distinct letterforms
+  (86 presentation forms, 52 private-use), every one of the 34,434 emitted
+  codepoints resolves to a real glyph in both weights, and re-resolving the
+  encoded strings the way the engine will reproduces the HarfBuzz glyph sequence
+  for all 1,424 runs
+- the installed Arabic mod, read back out of `d/mods/mod1` at the offsets the
+  `toc` gives: 716 of 716 strings byte-exact, all six slots carrying the
+  identical 1,290,017-byte payload, `d/localization` still retail
 
 **Not verified:**
 
-- **that the game loads the mod.** Nobody has run Rift Apart with one. The five
-  archive-descriptor constants come from Overstrike rather than from the game's
-  own archives; they are checked against the source field by field, and they
-  are believed to mean "flat and uncompressed" where retail means "LZ4 blocks",
-  but that is not established from the game's own data, because the game ships
-  no uncompressed archive to compare against. This is the main residual risk,
-  and a single launch settles it.
+- **that the game loads the mod, and that the Arabic reads correctly on screen.**
+  Nobody has run Rift Apart with one. The five archive-descriptor constants come
+  from Overstrike rather than from the game's own archives; they are checked
+  against the source field by field, and they are believed to mean "flat and
+  uncompressed" where retail means "LZ4 blocks", but that is not established from
+  the game's own data, because the game ships no uncompressed archive to compare
+  against. This is the main residual risk, and a single launch settles it.
+- **that the pre-shaping workaround survives contact with the renderer.** The
+  logic is verified — the strings resolve, in order, to the glyphs HarfBuzz
+  chose — but that is a statement about the data, not about the pixels. A caret
+  in a text field is the most likely thing to look wrong.
 - **which of slots 23/28/29/30 is Arabic.** The four are byte-identical and
   carry no identifier. Writing all four sidesteps it; a per-slot marker settles
   it.
-- **that Arabic is selectable in the game.** It is not, today. The language
-  dropdown in `d/config` has 23 entries and Arabic is not one of them, so
-  filling a slot gives the player no way to choose it. That is a second
-  archive, and it is not implemented — see
-  [docs/SOURCES.md](docs/SOURCES.md#3-inferred-not-proven).
+- **the language dropdown.** The dropdown in `d/config` has 23 entries and
+  Arabic is not one of them, and that file is not touched — it is game content,
+  and editing it in place is exactly what this project does not do. So the mod
+  also claims the two **en-US** slots, which means the Arabic shows when the game
+  is set to English (US) rather than when it is set to Arabic. That is a
+  workaround, not the intended behaviour, and it is the reason the in-game
+  language setting and what you see on screen will disagree.
+
+### What the first launch should tell you
+
+| what you see | what it means |
+| --- | --- |
+| Arabic, connected, right to left | it works; record it and this section can be tightened |
+| letters joined but words backwards | the run reversal is off for that string; the shaped data is fine |
+| separate letters, left to right | the font did not load, or the shaped codepoints are not in the `cmap` the game read |
+| boxes or nothing at all | the font asset was not repointed, or `d/mods/mod1` was not found |
+| a crash | the archive layout is wrong after all; the error text will say which field |
 
 ---
 
