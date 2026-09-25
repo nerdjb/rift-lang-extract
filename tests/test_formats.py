@@ -28,6 +28,8 @@ from rcextract.lump_types import (
     LUMP_LANG_KEY_OFF,
     LUMP_LANG_VALUES,
     LUMP_LANG_VALUE_OFF,
+    LUMP_LANGUAGE_KNOWN,
+    LUMP_TYPES,
 )
 from rcextract.toc import LOCALIZATION_PATH_HASH, Toc, TocError
 
@@ -363,6 +365,43 @@ class TestToc(unittest.TestCase):
     def test_non_localization_hash_has_no_language_id(self):
         t = Toc(Dat(_build_toc([(0, 1)], [(0x1234, 1, 0)]), 0))
         self.assertIsNone(t.assets[0].language_id)
+
+
+class TestLumpTypeProvenance(unittest.TestCase):
+    """Pin the provenance claim made in docs/SOURCES.md.
+
+    rcextract/lump_types.py is generated from ripped_apart's lump_types.h,
+    which supplies LUMP_TYPES.  The nine localisation CRCs are *not* in that
+    header -- they were recovered by inspecting the game files and are
+    hardcoded in tools/gen_lump_types.py.
+
+    The docs assert that split.  These tests fail if a future regeneration
+    ever merges the two sets, which would quietly make the documentation false.
+    """
+
+    def test_localisation_crcs_are_absent_from_upstream_table(self):
+        overlap = set(LUMP_LANGUAGE_KNOWN) & set(LUMP_TYPES)
+        self.assertEqual(
+            overlap, set(),
+            "localisation CRCs %s must not appear in the upstream table"
+            % sorted(hex(c) for c in overlap),
+        )
+
+    def test_there_are_exactly_nine_localisation_lumps(self):
+        self.assertEqual(len(LUMP_LANGUAGE_KNOWN), 9)
+
+    def test_upstream_table_still_has_its_full_size(self):
+        # ripped_apart's lump_types.h currently defines 78 types.  If upstream
+        # changes, this is the signal to re-check the localisation CRC list
+        # rather than to silently accept a different split.
+        self.assertEqual(len(LUMP_TYPES), 78)
+
+    def test_known_lumps_are_the_ones_lang_actually_reads(self):
+        # The six lumps rcextract.lang reads must all be in the known set, so
+        # the hardcoded list cannot quietly lose one.
+        for crc in (LUMP_LANG_COUNT, LUMP_LANG_KEYS, LUMP_LANG_KEY_OFF,
+                    LUMP_LANG_VALUES, LUMP_LANG_VALUE_OFF):
+            self.assertIn(crc, LUMP_LANGUAGE_KNOWN, hex(crc))
 
 
 if __name__ == "__main__":
