@@ -24,7 +24,8 @@ from typing import Sequence
 from . import __version__
 from .dat import DatError
 from .dsar import DsarError
-from .game import GameNotFound, find_game_root, load_localization
+from .game import (GameNotFound, find_game_root, load_localization,
+                    moved_localization_slots)
 from .lang import LocalizationError, StringTable
 from .languages import (
     EMPTY_SLOTS,
@@ -81,8 +82,17 @@ def cmd_list(args) -> int:
     print("game      : %s" % root)
     print("containers: %d" % len(tables))
     if not all(t.language_verified for t in tables):
-        print("WARNING   : no usable 'toc'; language ids are blob positions, "
-              "not real language ids")
+        moved = moved_localization_slots(root)
+        if moved:
+            print("WARNING   : a mod has repointed slot(s) %s out of "
+                  "d/localization." % ", ".join(str(i) for i in moved))
+            print("            The toc can no longer say which container is "
+                  "which, so those ids were")
+            print("            recovered by elimination: right as a set, not a "
+                  "verified join.")
+        else:
+            print("WARNING   : no usable 'toc'; language ids are blob positions, "
+                  "not real language ids")
     print()
     print("%-4s %-8s %-11s %-18s %-6s %-8s %s"
           % ("id", "code", "offset", "name", "keys", "strings", "notes"))
@@ -172,6 +182,21 @@ def cmd_dump(args) -> int:
     template = args.template or not t.translated_count
     out = args.out or os.path.join(root, "rcextract_%s.tsv" % t.code)
     _ensure_parent(out)
+
+    # The output extension picks the format, so a file called .json does not
+    # quietly end up holding tab-separated text.  The JSON shape is the one
+    # `rcextract mod install -t` reads, which makes dump -> edit -> install a
+    # closed loop with no conversion step.
+    if out.lower().endswith(".json"):
+        payload = ({k: "" for k in t.keys} if template
+                   else dict(t.items()))
+        with open(out, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False, indent=1)
+        what = ("template" if template
+                else "%d/%d strings" % (t.translated_count, t.key_count))
+        print("wrote %s  (%s, %d keys, %s)" % (out, what, t.key_count, t.code))
+        return 0
+
     with open(out, "w", encoding="utf-8", newline="") as fh:
         _write_tsv(t, fh, template=template)
     if template:
@@ -179,7 +204,7 @@ def cmd_dump(args) -> int:
               % (out, t.key_count, t.code))
         if not args.template and not t.translated_count:
             print("  this slot is empty in this build, so every value is blank.")
-            print("  This tool only reads; see the README for writing strings back.")
+            print("  Fill it in, then: rcextract mod install -t %s" % out)
     else:
         print("wrote %s  (%d/%d strings, %s)"
               % (out, t.translated_count, t.key_count, t.code))
@@ -290,7 +315,11 @@ def _read_translations(path: str) -> dict[str, str]:
         data = json.loads(text)
         if not isinstance(data, dict):
             _die("%s: expected a JSON object of key -> string" % path)
-        return {k: v for k, v in data.items() if v is not None}
+        # Blank is untranslated, exactly as it is in the TSV path below.  It
+        # matters: `dump --template -o x.json` produces 25,034 empty values,
+        # and installing that file untouched has to mean "fall back to
+        # English", not "replace every string with nothing".
+        return {k: v for k, v in data.items() if v}
 
     out: dict[str, str] = {}
     reader = csv.reader(text.splitlines(), delimiter="\t", quoting=csv.QUOTE_NONE)

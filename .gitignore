@@ -20,16 +20,24 @@ venv/
 #
 #     rcextract dump --game "$GAME" -l en-US -o en_US.tsv
 #
-# If you want to version your *own translations*, put them in translations/
-# and re-include that path at the bottom of this file.
+# *.json and *.tsv are ignored everywhere, because that is the shape of both
+# rcextract's output and a translation.  Your own translations are meant to
+# live in translations/, which is re-included below -- note that a bare
+# "!translations/" would NOT be enough, since the file patterns above would
+# still match the files inside it.
 # ---------------------------------------------------------------------------
 *.dsar
 *.tsv
 *.json
-!translations/
 toc.bin
 *.localization
 rcextract_*
+
+# Your translations, if you want them versioned.  This is a directory the
+# project ships; drop .json or .tsv files in it.
+!translations/
+!translations/*.json
+!translations/*.tsv
 
 # Editors / OS
 .DS_Store

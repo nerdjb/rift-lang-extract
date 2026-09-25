@@ -185,8 +185,11 @@ def build_container(
     `values` may be a mapping or a sequence aligned with `keys`.  A missing
     key, or a value of ``None``, is left untranslated.
 
-    `flags` is the per-entry flag byte (lump 0xb0653243).  It is zero
-    throughout retail, so it can be ignored.
+    `flags` is the per-entry flag byte (lump 0xb0653243).  It is **not** all
+    zero: 5,889 keys carry the value 2, and that set is byte-identical in all
+    32 retail containers, so it is a property of the key rather than of the
+    language.  What 2 means is unknown.  Pass ``table.flags`` through from a
+    parsed container; hardcoding zero would silently change those entries.
     """
     if isinstance(values, Mapping):
         by_key: dict[str, str | None] = dict(values)

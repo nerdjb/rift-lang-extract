@@ -40,6 +40,13 @@ LOCALIZATION_PATH_HASH = 0xBE55D94F171BF8DE
 #: TOC groups for the localisation archive step by this much between languages.
 LOCALIZATION_GROUP_STRIDE = 8
 
+#: The archive that holds the 32 retail containers, as the TOC spells it.
+#:
+#: Not the asset path -- that is
+#: ``localization/localization_all.localization``, which is what
+#: :data:`LOCALIZATION_PATH_HASH` is the hash of.  This is the *archive* name.
+LOCALIZATION_ARCHIVE = "d\\localization"
+
 
 class TocError(Exception):
     """Raised when a table of contents cannot be parsed."""

@@ -55,6 +55,34 @@ def _game() -> str | None:
 GAME = _game()
 needs_game = unittest.skipIf(GAME is None, "no Rift Apart install found")
 
+
+def _pristine_toc() -> str | None:
+    """A ``toc`` in the install that has no mod archive in it.
+
+    The installer writes ``toc.orig`` before it changes anything, and
+    Overstrike leaves a ``toc.BAK``; either is a copy of the retail file.  The
+    tests need one of those rather than ``toc``, because a user who has
+    followed the README has a mod installed, and the install tests have to
+    start from a table that does not already list ``d\\mods\\mod1``.
+    """
+    if GAME is None:
+        return None
+    for name in ("toc.orig", "toc.BAK", "toc"):
+        p = os.path.join(GAME, name)
+        if not os.path.isfile(p):
+            continue
+        try:
+            img = TocImage.load(p)
+        except (ModError, DatError, OSError):
+            continue
+        if img.archive_index(MOD_ARCHIVE_NAME) is None:
+            return p
+    return None
+
+
+#: Retail ``toc`` to build tests from, whatever state the install is in.
+RETAIL_TOC = _pristine_toc()
+
 ARABIC = {
     "INVALID": None,
     "UI_WEAPONS": "الأسلحة",
@@ -156,12 +184,12 @@ class InstallCycle(unittest.TestCase):
     """The whole point: a real toc, edited, and put back exactly as it was."""
 
     def setUp(self):
-        if GAME is None:
-            self.skipTest("no Rift Apart install found")
+        if RETAIL_TOC is None:
+            self.skipTest("no retail toc (no install, or every toc has a mod)")
         self.sandbox = tempfile.mkdtemp(prefix="rcra-mod-")
         self.addCleanup(shutil.rmtree, self.sandbox, True)
         self.toc = os.path.join(self.sandbox, "toc")
-        shutil.copy2(os.path.join(GAME, "toc"), self.toc)
+        shutil.copy2(RETAIL_TOC, self.toc)
         with open(self.toc, "rb") as fh:
             self.orig = fh.read()
         self.image = TocImage.load(self.toc)
@@ -185,7 +213,7 @@ class InstallCycle(unittest.TestCase):
         self.assertEqual(sorted(self.loc), list(range(32)))
 
     def test_install_repoints_only_the_targets(self):
-        before = TocImage.load(os.path.join(GAME, "toc"))
+        before = TocImage.load(RETAIL_TOC)
         install(self.sandbox, self._mod())
         after = TocImage.load(self.toc)
 
@@ -307,14 +335,97 @@ def _lump_crcs(image: TocImage):
     return [l.type_crc for l in image.dat.lumps]
 
 
+class ReaderSurvivesAMod(unittest.TestCase):
+    """Installing a mod must not break the reader.
+
+    The reader identifies each container's language by joining container
+    offsets against the table of contents.  A mod repoints four of those
+    entries at ``d/mods/mod1``, where the offsets mean something else -- so a
+    naive join stops matching and ``list`` starts reporting blob positions as
+    language ids, which silently mislabels all 32 tables and moves the "empty
+    slots" line to the wrong four numbers.
+
+    This is the bug that made ``rcextract list`` contradict ``EMPTY_SLOTS``
+    after an install.  The four it names have to stay the same four.
+    """
+
+    def setUp(self):
+        if RETAIL_TOC is None:
+            self.skipTest("no retail toc (no install, or every toc has a mod)")
+        self.sandbox = tempfile.mkdtemp(prefix="rcra-reader-")
+        self.addCleanup(shutil.rmtree, self.sandbox, True)
+        shutil.copy2(RETAIL_TOC, os.path.join(self.sandbox, "toc"))
+        # d/localization is read-only to the tool, so a symlink is enough and
+        # keeps the test from copying 30 MB.
+        os.makedirs(os.path.join(self.sandbox, "d"))
+        os.symlink(os.path.join(GAME, "d", "localization"),
+                   os.path.join(self.sandbox, "d", "localization"))
+
+    def _empty_slots(self):
+        from rcextract.game import load_localization, moved_localization_slots
+        tables = load_localization(self.sandbox)
+        return (sorted(t.language_id for t in tables if not t.translated_count),
+                all(t.language_verified for t in tables),
+                moved_localization_slots(self.sandbox))
+
+    def test_before_install(self):
+        empty, verified, moved = self._empty_slots()
+        self.assertEqual(empty, sorted(EMPTY_SLOTS))
+        self.assertTrue(verified, "a pristine toc must give a verified join")
+        self.assertEqual(moved, [])
+
+    def test_after_install(self):
+        image = TocImage.load(os.path.join(self.sandbox, "toc"))
+        install(self.sandbox, build_mod(image, {s: payload() for s in default_targets()}))
+        empty, verified, moved = self._empty_slots()
+        self.assertEqual(moved, sorted(EMPTY_SLOTS),
+                         "the mod must repoint exactly the empty slots")
+        self.assertEqual(empty, sorted(EMPTY_SLOTS),
+                         "empty slots must still be the same four after a mod")
+        self.assertFalse(verified,
+                         "ids recovered by elimination are not a verified join")
+
+    def test_shipped_languages_keep_their_identity(self):
+        """The mislabelling that matters: en-GB is 18,867 strings, not 19,144."""
+        image = TocImage.load(os.path.join(self.sandbox, "toc"))
+        install(self.sandbox, build_mod(image, {s: payload() for s in default_targets()}))
+        from rcextract.game import load_localization
+        tables = {t.language_id: t for t in load_localization(self.sandbox)}
+        self.assertEqual(tables[0].translated_count, 19144)
+        self.assertEqual(tables[1].translated_count, 19144)
+        self.assertEqual(tables[2].translated_count, 18867)
+        self.assertEqual(tables[2].code, "en-GB")
+
+    def test_uninstall_restores_a_verified_join(self):
+        image = TocImage.load(os.path.join(self.sandbox, "toc"))
+        install(self.sandbox, build_mod(image, {s: payload() for s in default_targets()}))
+        uninstall(self.sandbox)
+        empty, verified, moved = self._empty_slots()
+        self.assertEqual(empty, sorted(EMPTY_SLOTS))
+        self.assertTrue(verified)
+        self.assertEqual(moved, [])
+
+    def test_reader_refuses_when_counts_do_not_agree(self):
+        """Elimination needs the orphan count to match.  If it does not, the
+        right answer is to give up rather than to pair things up wrongly."""
+        from rcextract.game import language_ids_from_toc
+        from rcextract.game import read_localization_blob
+        blob = read_localization_blob(self.sandbox)
+        image = TocImage.load(os.path.join(self.sandbox, "toc"))
+        # Repoint a slot the toc still describes correctly, by hand: the
+        # archive gains an orphan but the toc's own assets all still resolve.
+        install(self.sandbox, build_mod(image, {s: payload() for s in default_targets()}))
+        self.assertIsNotNone(language_ids_from_toc(self.sandbox, blob))
+
+
 class Structure(unittest.TestCase):
     """Facts about the shipped toc that this module relies on."""
 
     @classmethod
     def setUpClass(cls):
-        if GAME is None:
-            raise unittest.SkipTest("no Rift Apart install found")
-        cls.img = TocImage.load(os.path.join(GAME, "toc"))
+        if RETAIL_TOC is None:
+            raise unittest.SkipTest("no retail toc (no install, or every toc has a mod)")
+        cls.img = TocImage.load(RETAIL_TOC)
 
     def test_counts(self):
         self.assertEqual(self.img.asset_count, len(self.img.lump(0x506D7B8A)) // 8)

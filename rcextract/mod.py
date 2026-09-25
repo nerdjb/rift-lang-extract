@@ -371,10 +371,11 @@ def build_mod(image: TocImage, payloads: dict[int, bytes],
               archive_rel: str = MOD_ARCHIVE_REL) -> Mod:
     """Plan a mod that serves `payloads` for the given language `slots`.
 
-    `payloads` maps language id to a built localisation container.  `slots`
-    defaults to every empty retail slot, and every slot in it is given the
-    same payload, so the result does not depend on knowing which slot the
-    game means by Arabic.
+    `payloads` maps language id to a built localisation container, so the
+    default case -- one payload for all of `default_targets()` -- does not
+    depend on knowing which of the empty slots the game means by Arabic.  A
+    caller that *does* know can pass a different payload per slot, which is
+    how the slot can be identified by observation rather than by guessing.
     """
     if slots is None:
         slots = default_targets()

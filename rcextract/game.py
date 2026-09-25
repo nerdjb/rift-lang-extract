@@ -11,7 +11,7 @@ import os
 from .dat import Dat, DatError, scan_containers
 from .dsar import DsarArchive, DsarError
 from .lang import StringTable, load_all
-from .toc import Toc, TocError
+from .toc import LOCALIZATION_ARCHIVE, Toc, TocError
 
 #: The archive that holds every language's string table, relative to the
 #: install root.
@@ -101,24 +101,79 @@ def language_ids_from_toc(root: str, blob: bytes) -> list[int] | None:
     asset also records the byte offset and size of its container inside the
     decompressed archive, which is what this joins on.
 
+    Assets that a mod has repointed out of ``d/localization`` no longer record
+    where their container lives, so they cannot contribute to the join.  When
+    a mod is installed by :mod:`rcextract.mod` that is exactly what happens to
+    the four empty slots, and the containers are all still present in the
+    archive.  The orphans are recovered by elimination: if the number of
+    containers the toc cannot place equals the number of localisation assets
+    that have been moved elsewhere, the two sets are the same set.  The
+    pairing within them is arbitrary, which is why callers treat the result
+    as unverified -- but the *set* of empty slots comes out right, which is
+    what ``list``, ``dump`` and ``verify`` report.
+
     Returns None if the TOC is missing or does not line up with the archive,
     in which case callers should not guess.
     """
     try:
-        assets = Toc.open(root).localization_assets()
+        toc = Toc.open(root)
     except (TocError, DatError, DsarError, GameNotFound, OSError):
         return None
+
+    assets = toc.localization_assets()
     if not assets:
         return None
 
-    mapping = {(a.offset, a.size): a.language_id for a in assets}
-    ids: list[int] = []
+    resident: list = []
+    moved: list = []
+    for a in assets:
+        if toc.archive_name(a.archive_index) == LOCALIZATION_ARCHIVE:
+            resident.append(a)
+        else:
+            moved.append(a)
+
+    mapping = {(a.offset, a.size): a.language_id for a in resident}
+    placed: list[int | None] = []
+    orphans = 0
     for c in scan_containers(blob):
         lid = mapping.get((c.base, c.file_size))
+        placed.append(lid)
         if lid is None:
+            orphans += 1
+
+    if orphans:
+        moved_ids = sorted(a.language_id for a in moved if a.language_id is not None)
+        if orphans != len(moved_ids):
+            # Either the archive does not match the toc, or something moved an
+            # asset somewhere the toc still describes.  Do not guess.
             return None
-        ids.append(lid)
-    return ids
+        spare = iter(moved_ids)
+        placed = [next(spare) if v is None else v for v in placed]
+    elif moved:
+        return None
+
+    # Every container must have an id.  Filtering the Nones out instead would
+    # quietly return a short list, and a short list mislabels every language
+    # after the gap -- so fail loudly instead.
+    if any(v is None for v in placed):
+        return None
+    return [v for v in placed if v is not None]
+
+
+def moved_localization_slots(root: str) -> list[int]:
+    """Language slots whose assets no longer live in ``d/localization``.
+
+    Non-empty exactly when a mod has repointed them, which means the toc can
+    no longer place their containers and the ids had to be recovered by
+    elimination.  Callers use it to explain why a result is unverified.
+    """
+    try:
+        toc = Toc.open(root)
+    except (TocError, DatError, DsarError, GameNotFound, OSError):
+        return []
+    out = [a.language_id for a in toc.localization_assets()
+           if toc.archive_name(a.archive_index) != LOCALIZATION_ARCHIVE]
+    return sorted(i for i in out if i is not None)
 
 
 def load_localization(root: str, gdeflate=None) -> list[StringTable]:
@@ -132,7 +187,9 @@ def load_localization(root: str, gdeflate=None) -> list[StringTable]:
     blob = read_localization_blob(root, gdeflate)
     ids = language_ids_from_toc(root, blob)
     tables = load_all(blob, ids)
-    if ids is None:
+    if ids is None or moved_localization_slots(root):
+        # Ids recovered by elimination are right as a set, but the pairing
+        # within the moved set is arbitrary, so this is not a verified join.
         for t in tables:
             t.language_verified = False
     # Return in language order.  The archive stores these in an unrelated

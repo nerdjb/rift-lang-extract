@@ -25,6 +25,7 @@ from rcextract.game import (  # noqa: E402
     find_game_root,
     language_ids_from_toc,
     load_localization,
+    moved_localization_slots,
     read_localization_blob,
 )
 from rcextract.lang import parse_container  # noqa: E402
@@ -68,8 +69,18 @@ class TestRealArchive(unittest.TestCase):
     def test_language_ids_are_unique_and_complete(self):
         ids = sorted(t.language_id for t in self.tables)
         self.assertEqual(ids, list(range(32)))
-        self.assertTrue(all(t.language_verified for t in self.tables),
-                        "language ids were not confirmed against the toc")
+        # A verified join needs the toc to still describe where every
+        # container lives.  An installed mod repoints some of those entries,
+        # so the ids come back recovered-by-elimination instead: right as a
+        # set, but not confirmed.  Both are acceptable; the *reason* is not,
+        # which is why the unverified case is only allowed with a mod present.
+        moved = moved_localization_slots(GAME)
+        if moved:
+            self.assertEqual(moved, sorted(EMPTY_SLOTS))
+            self.assertFalse(all(t.language_verified for t in self.tables))
+        else:
+            self.assertTrue(all(t.language_verified for t in self.tables),
+                            "language ids were not confirmed against the toc")
 
     def test_known_slots(self):
         by_id = {t.language_id: t for t in self.tables}
@@ -250,6 +261,7 @@ class TestCliAgainstRealArchive(unittest.TestCase):
         self.assertIn("Arabic", out)
 
 
+@unittest.skipIf(GAME is None, "no Rift Apart install found (set RCEXTRACT_GAME)")
 class TestWriterRoundTrip(unittest.TestCase):
     """The writer is only trustworthy if it can reproduce the game byte for byte.
 
