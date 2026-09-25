@@ -8,6 +8,8 @@ Subcommands::
     rcextract get       --game DIR --lang de --key UI_WEAPONS
     rcextract toc       --game DIR            inspect the table of contents
     rcextract verify    --game DIR            self-check the string tables
+    rcextract mod install  --game DIR -t FILE install a localisation mod
+    rcextract mod uninstall --game DIR        remove it again
 """
 
 from __future__ import annotations
@@ -48,11 +50,28 @@ def _die(msg: str, code: int = 1):
     raise SystemExit(code)
 
 
+def _warn(msg: str):
+    print("%s: warning: %s" % (PROG, msg), file=sys.stderr)
+
+
 def _tables(args) -> list[StringTable]:
     try:
         return load_localization(_root(args))
     except (DsarError, LocalizationError, DatError) as e:
         _die(str(e))
+
+
+def _toc_root(args) -> str:
+    """An install root for work that only needs the table of contents.
+
+    Undoing a mod touches ``toc`` and the mod archive, and nothing else, so it
+    should not insist on a full game install being present.
+    """
+    cand = getattr(args, "game", None) or os.getcwd()
+    cand = os.path.abspath(cand)
+    if os.path.isfile(os.path.join(cand, "toc")):
+        return cand
+    return _root(args)
 
 
 # ---------------------------------------------------------------- subcommands
@@ -258,6 +277,134 @@ def _ensure_parent(path: str) -> None:
         os.makedirs(d, exist_ok=True)
 
 
+# ------------------------------------------------------------------- mod
+def _read_translations(path: str) -> dict[str, str]:
+    """Load a translation file: TSV with a header, or a JSON object."""
+    if path == "-":
+        text = sys.stdin.read()
+    else:
+        with open(path, "r", encoding="utf-8") as fh:
+            text = fh.read()
+
+    if path.endswith(".json") or text.lstrip()[:1] in "{[":
+        data = json.loads(text)
+        if not isinstance(data, dict):
+            _die("%s: expected a JSON object of key -> string" % path)
+        return {k: v for k, v in data.items() if v is not None}
+
+    out: dict[str, str] = {}
+    reader = csv.reader(text.splitlines(), delimiter="\t", quoting=csv.QUOTE_NONE)
+    try:
+        header = next(reader)
+    except StopIteration:
+        return out
+    if [h.strip().lower() for h in header[:2]] != ["key", "value"]:
+        _die("%s: expected a TSV whose first two columns are 'key' and 'value'" % path)
+    for lineno, row in enumerate(reader, start=2):
+        if not row:
+            continue
+        if len(row) < 2:
+            _die("%s:%d: expected two columns, got %d" % (path, lineno, len(row)))
+        key, value = row[0], row[1]
+        if "\t" in value or any(c in value for c in "\r\n"):
+            _die("%s:%d: value for %r contains a tab or newline, which the "
+                 "format cannot represent" % (path, lineno, key))
+        if value != "":
+            out[key] = value
+    return out
+
+
+def cmd_mod(args) -> int:
+    from .build import BuildError, build_container
+    from .mod import ModError, TocImage, build_mod, default_targets, install, uninstall
+
+    if args.action == "uninstall":
+        try:
+            res = uninstall(_toc_root(args))
+        except ModError as e:
+            _die(str(e))
+        if res["archive_removed"]:
+            print("removed %s" % res["archive"])
+        else:
+            print("no mod archive was present at %s" % res["archive"])
+        print("restored %s" % res["toc_restored"])
+        return 0
+
+    root = _root(args)
+
+    # Everything below builds a mod.  The key set and the per-key flag bytes
+    # come from a shipped container, so only the values are ours.
+    try:
+        tables = load_localization(root)
+    except (DsarError, LocalizationError, DatError) as e:
+        _die(str(e))
+    template = tables[1] if len(tables) > 1 else tables[0]
+
+    translations: dict[str, str] = {}
+    if args.translations:
+        try:
+            translations = _read_translations(args.translations)
+        except (OSError, ValueError) as e:
+            _die("could not read %s: %s" % (args.translations, e))
+
+    unknown = [k for k in translations if k not in template]
+    if unknown:
+        _die("%s: %d key(s) are not in the game's key list, starting with %r"
+             % (args.translations, len(unknown), unknown[0]))
+
+    # What the table looks like before our edits.  Only the key list and the
+    # per-key flag bytes come from the template -- the values are what we are
+    # replacing, and keeping them would make the mod "English with a few
+    # Arabic strings in it".
+    values = dict(zip(template.keys, template.values))
+    if args.keep_english:
+        # Off by default.  Useful for a first test where you want to confirm
+        # the mod loads at all and only a handful of strings are Arabic.
+        _warn("keeping %d English value(s) from the template; untranslated "
+              "keys will read English rather than falling back to it"
+              % sum(1 for v in values.values() if v is not None))
+    else:
+        values = dict.fromkeys(template.keys)
+    values.update(translations)
+
+    try:
+        payload = build_container(template.keys, values, dict(zip(template.keys, template.flags)))
+    except BuildError as e:
+        _die(str(e))
+
+    slots = tuple(int(s) for s in args.slot) if args.slot else default_targets()
+    try:
+        image = TocImage.load(os.path.join(root, "toc"))
+        mod = build_mod(image, {s: payload for s in slots},
+                        name=args.name, archive_rel=args.archive)
+    except ModError as e:
+        _die(str(e))
+
+    if args.dry_run:
+        print("would write %s (%d bytes) and repoint %d toc entries"
+              % (os.path.join(root, *args.archive.split("\\")),
+                 sum(len(p) for _, p in mod.assets), len(mod.assets)))
+        print("slots: %s" % ", ".join(str(s) for s in slots))
+        print("translated %d of %d keys" % (len(translations), len(template)))
+        return 0
+
+    try:
+        info = install(root, mod, backup=not args.no_backup)
+    except ModError as e:
+        _die(str(e))
+
+    print("wrote %s (%d bytes)" % (info["archive"], info["archive_bytes"]))
+    print("repointed %d toc entries at archive index %d"
+          % (len(info["assets"]), info["archive_index"]))
+    print("slots: %s" % ", ".join(str(s) for s in slots))
+    print("translated %d of %d keys; the rest fall back to English"
+          % (len(translations), len(template)))
+    if info["backup"]:
+        print("toc backed up to %s" % info["backup"])
+        print("remove the mod with:  rcextract mod uninstall --game %r" % root)
+    return 0
+
+
 # ---------------------------------------------------------------- arg parsing
 def build_parser() -> argparse.ArgumentParser:
     # Shared so that --game works both before and after the subcommand.
@@ -307,6 +454,28 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("verify", parents=[common], help="self-check every string table")
     s.set_defaults(fn=cmd_verify)
+
+    s = sub.add_parser("mod", parents=[common],
+                       help="build and install a localisation mod")
+    s.add_argument("action", choices=("install", "uninstall"))
+    s.add_argument("-t", "--translations", metavar="FILE",
+                   help="TSV (header 'key<TAB>value') or JSON object of translations; "
+                        "'-' reads stdin.  Keys left out stay untranslated and fall "
+                        "back to English")
+    s.add_argument("-s", "--slot", action="append", metavar="ID",
+                   help="language slot to claim; repeatable.  Defaults to all four "
+                        "empty retail slots (23, 28, 29, 30)")
+    s.add_argument("-n", "--name", default="rcextract localisation mod")
+    s.add_argument("--keep-english", action="store_true",
+                   help="keep the template language's existing values for keys you "
+                        "did not translate, instead of leaving them untranslated")
+    s.add_argument("--archive", default="d\\mods\\mod1",
+                   help="path of the mod archive, relative to the install root")
+    s.add_argument("--dry-run", action="store_true",
+                   help="report what would change without writing anything")
+    s.add_argument("--no-backup", action="store_true",
+                   help="do not keep toc.orig (then uninstall cannot restore it)")
+    s.set_defaults(fn=cmd_mod)
 
     return p
 

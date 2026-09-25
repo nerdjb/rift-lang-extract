@@ -80,13 +80,43 @@ the `dec_offset` fields are really just a check that assumption holds.
 ```
 
 The magic can sit behind a small unrelated header. In `toc` it is at offset 8,
-where the preceding 8 bytes are a build hash. The `d/localization` containers
-start at offset 0.
+where the first 4 bytes are a magic (`0x34e89035`) and the next 4 are the
+container length. The `d/localization` containers start at offset 0.
 
 `file_size` is what lets containers be chained: the next one starts exactly
 where this one ends.
 
 The main `toc` is **not** DSAR-wrapped. It is a bare `1TAD`.
+
+### Writing one back
+
+Two things have to be right or the container is rejected:
+
+**The directory is sorted by lump CRC, but the payloads are not.** The
+directory is always emitted in ascending CRC order regardless of where the
+payloads sit; the payloads follow in a separate, logical order (count, hashes,
+hashes-sorted, indexes-sorted, key offsets, value offsets, flags, key blob,
+value blob). Sorting both together produces a file that looks fine and is not
+byte-comparable with a shipped one.
+
+**The bytes between the directory and the first payload are not padding.**
+Several containers carry a NUL-terminated label there, and it must be
+reproduced:
+
+| Container            | Label                     | Length |
+|----------------------|---------------------------|--------|
+| localisation         | `Localization Built File` | 36     |
+| `toc`                | `ArchiveTOC`              | 16     |
+
+It is padded with zeros to the next 16-byte boundary. Localisation payloads
+are aligned to 16 bytes; other containers align to 4.
+
+The **last payload is not padded**, and `file_size` is its end. Padding it
+makes the container claim bytes it does not have.
+
+Proof that the writer is correct: rebuilding all 32 shipped containers with no
+edits returns the identical bytes (`test_all_containers_rebuild_byte_identically`).
+The same is true of the whole `toc` file.
 
 ---
 
@@ -102,10 +132,10 @@ by inspecting the containers. The names below are descriptive.
 | `0xa4ea55b2` | Key offsets     | u32[N] into the key blob                        |
 | `0x70a382b8` | Values          | NUL-terminated localised strings                |
 | `0xf80deeb4` | Value offsets   | u32[N] into the value blob; **0 = untranslated**|
-| `0xb0653243` | Zero            | u32[N], all zero in every shipped language      |
+| `0xb0653243` | Flags           | u8[N] + 3N zero bytes                           |
 | `0x06a58050` | Key hash        | u32[N]                                          |
-| `0x0cd2cfe9` | Hash overflow    | u32[N/2]                                        |
-| `0xc43731b5` | Key alt          | u32[N]                                          |
+| `0xc43731b5` | Key hash, sorted| u32[N], ascending                               |
+| `0x0cd2cfe9` | Sorted indexes  | u16[N]                                          |
 
 ### The offset-0 sentinel
 
@@ -129,6 +159,35 @@ carry a **byte-identical key list of 25,034 keys**; only the values differ.
 That is why the offsets are redundant, and it is also the invariant that makes
 a translation safe: a string written against `MENU_QUIT` is the same string in
 every slot.
+
+### Entry order is `INVALID`, then UTF-16 ordinal
+
+Entry 0 is always the key `INVALID`, and the remaining 25,033 are in ordinal
+order. "Ordinal" means C#'s `string.CompareOrdinal`, i.e. **UTF-16 code unit**
+order — which is *not* Python's code point order for anything above the
+BMP. `U+1D400` sorts before `U+FF21` in UTF-16 (`D835 DC00` vs `FF21`) and
+after it by code point.
+
+### The key hash
+
+The lookup hash is CRC-32 with the reflected polynomial `0xEDB88320`, seeded
+with **the polynomial itself** rather than all-ones, and with **no final
+inversion**. It therefore agrees with neither `zlib.crc32` nor the textbook
+value, and has to be implemented rather than imported.
+
+Verified against the game: lump `0x06a58050` ships the hash of all 25,034 keys
+in every language, so it is a ready-made oracle for 25,034 test vectors.
+
+### Flag bytes are not zero
+
+`0xb0653243` is one flag byte per entry, then `3N` zero bytes. It is **not**
+all zero: 5,889 keys carry the value `2`, and the set is **byte-identical in
+all 32 containers** — so it is a property of the key, not of the language. The
+keys that carry it look like voice-over cue names (`AMOE_ENM_GEN_*`,
+`CHEN_CIV_GEN_IDLE_*`), but what `2` means is not established.
+
+A writer has to carry these through. Hardcoding zero would silently change
+those entries' meaning.
 
 ---
 
@@ -175,6 +234,53 @@ labels every table wrong. The join has to go through the TOC:
 
 That join is exact and unambiguous, which is what `rcextract` does.
 
+### The path hash
+
+The TOC stores asset paths as a 64-bit hash, and `0xbe55d94f171bf8de` is the
+localisation asset's. The function is a **reflected CRC-64**: polynomial
+`0xC96C5795D7870F42`, table generated from its low bits, initialised to
+`0xC96C5795D7870F42` (the polynomial, not all-ones), then rotated before each
+byte:
+
+```
+v = 0xC96C5795D7870F42
+for b in utf8(normalize(path)):
+    v = (v >> 2) | 0x8000000000000000
+    v = (v >> 8) ^ table[0xFF & (v ^ b)]
+```
+
+`normalize` lowercases, converts `\` to `/`, collapses repeated slashes and
+strips leading and trailing ones.
+
+The path is `localization/localization_all.localization` — **not** `d/localization`,
+which is the *archive* name, not the asset path. (Guessing the archive name is
+why this took a while to pin down; see `SOURCES.md`.)
+
+### Archive records
+
+Each of the 66 bytes per archive in lump `0x398abff0` is:
+
+```
+0x00  40s  name, NUL-terminated, zero-padded
+0x28  u64  A       \
+0x30  u64  B        |
+0x38  u32  C        |  load descriptor
+0x3C  u16  D        |
+0x3E  u32  E       /  load-order bucket, in units of 0x01000000
+```
+
+A, B, C and D are **byte-identical across all 147 retail archives**, so they are
+not per-archive data — they do not encode size or offset, they describe how to
+read the archive's contents. E is a load-order bucket: zero for 113 archives,
+and non-zero only for the audio pairs `d\wem.<lang>` / `d\soundbank.<lang>`,
+which share a bucket and ascend with archive index.
+
+A mod archive is **not** DSAR-wrapped. It is a flat concatenation of payloads
+with no block directory, which is why no LZ4 encoder is needed anywhere in
+`rcextract`. Its descriptor differs from the retail one; see the note in
+`rcextract/mod.py`, which is explicit about what is measured and what is
+inherited from Overstrike.
+
 ---
 
 ## 6. The four empty slots
@@ -215,6 +321,13 @@ the best-supported account of what the slots are for.
 four slots are byte-identical and carry no identifier, so the mapping is not
 recoverable from the data — only by filling one and seeing whether the game
 picks it up.
+
+### Which of them to write
+
+All four. They are identical empty containers, so writing the same text into
+each costs nothing but 3× the archive size, and it removes the need to guess.
+`rcextract mod install` does this by default; `--slot` narrows it if you would
+rather test one.
 
 ### Arabic is nonetheless a real, supported language
 
@@ -335,14 +448,22 @@ sentinel in §4 is what makes the distinction representable at all.
 
 ## 9. What is not here
 
-This file documents the **read** path only.
+**Where a translation actually lands.** A mod does *not* rewrite
+`d/localization`. It writes a new archive, `d\mods\mod1`, holds the new
+containers there, adds one record to the `toc` and repoints four asset entries
+at it. `d/localization` is left alone, so there is no re-laying-out of the 31
+other containers, no DSAR to recompress, and no LZ4 encoder anywhere in the
+project.
 
-Writing strings back means rebuilding a `1TAD` container, re-laying-out every
-container after it (the ones that follow shift in the archive), updating the
-TOC `offset`/`size` entries, and re-compressing the DSAR. That is what
-[ripped_apart](https://github.com/chaoticgd/ripped_apart) and the Overstrike
-mod loader already do, and they do it with a dependency graph the TOC provides
-for exactly this purpose. `rcextract` does not reimplement it.
+That is what sections 3 and 5 have been building towards: a `1TAD` container is
+written byte-identically, and a `toc` is written byte-identically, so both can
+be placed anywhere. The mod archive is **flat** — payloads concatenated with no
+block directory — so the `toc`'s `(offset, size)` address the payload directly.
+
+**Not done here:** making Arabic *selectable*. The language dropdown in
+`d/config` has 23 entries and Arabic is not one of them, so filling a slot gives
+the player no way to choose it. That is a second archive, deferred — see
+[docs/SOURCES.md](SOURCES.md#3-inferred-not-proven).
 
 The value blob's leading NUL means a writer must keep the sentinel, and the
 offset tables must be regenerated from the new blob rather than patched.

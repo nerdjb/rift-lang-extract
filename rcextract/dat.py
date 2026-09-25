@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import struct
 from dataclasses import dataclass
-from typing import Iterator
+from typing import Iterable, Iterator
 
 from .lump_types import LUMP_TYPES
 
@@ -146,6 +146,65 @@ class Dat:
         if len(raw) % 4:
             raise DatError("lump %#010x is not a whole number of u32s" % type_crc)
         return struct.unpack("<%dI" % (len(raw) // 4), raw)
+
+
+def serialize(lumps: Iterable[tuple[int, bytes]], type_crc: int = 0,
+              strings_block: bytes = b"", magic: bytes = MAGIC,
+              align: int = 4) -> bytes:
+    """Serialise a ``1TAD`` container from ``(type_crc, payload)`` pairs.
+
+    `lumps` is given in the order the payloads should appear on disk.  The
+    directory itself is always written sorted by type CRC, which is how
+    Insomniac's serialiser emits it and how every retail container reads.
+
+    `strings_block` is the run of bytes between the end of the directory and
+    the first lump.  Several containers carry a human-readable label there
+    ("Localization Built File", "ArchiveTOC") and it is not padding: it is
+    copied through unchanged, so a rebuilt container keeps it.
+
+    The last lump is not padded, and ``file_size`` is its end -- padding it
+    would make the container claim bytes it does not have.
+    """
+    lumps = list(lumps)
+    if len({crc for crc, _ in lumps}) != len(lumps):
+        raise DatError("duplicate lump type CRC")
+
+    dir_end = 0x10 + 12 * len(lumps)
+    cursor = dir_end + len(strings_block)
+    if align > 1:
+        cursor += -cursor % align
+
+    offsets: list[int] = []
+    for i, (_, payload) in enumerate(lumps):
+        offsets.append(cursor)
+        cursor += len(payload)
+        if i != len(lumps) - 1 and align > 1:
+            cursor += -cursor % align
+
+    out = bytearray()
+    out += magic
+    out += struct.pack("<II", type_crc, cursor)
+    out += struct.pack("<HH", len(lumps), 0)
+    for (crc, payload), off in sorted(zip(lumps, offsets)):
+        out += struct.pack("<III", crc, off, len(payload))
+    assert len(out) == dir_end
+    out += strings_block
+    if align > 1:
+        out += bytes(-len(out) % align)
+    for i, (_, payload) in enumerate(lumps):
+        assert len(out) == offsets[i]
+        out += payload
+        if i != len(lumps) - 1 and align > 1:
+            out += bytes(-len(out) % align)
+    assert len(out) == cursor
+    return bytes(out)
+
+
+def strings_block_of(dat: Dat) -> bytes:
+    """The bytes between a container's lump directory and its first lump."""
+    dir_end = 0x10 + 12 * dat.lump_count
+    first = min(l.offset for l in dat.lumps) if dat.lumps else dir_end
+    return dat.buffer[dat.base + dir_end:dat.base + first]
 
 
 def scan_containers(buffer: bytes, limit: int | None = None) -> list[Dat]:

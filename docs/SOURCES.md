@@ -77,7 +77,10 @@ known-good expectations. `docs/FORMAT.md` documents the result.
 | The archive is 32 `1TAD` containers back to back | Scan for the `1TAD` magic across the 70 MB decompressed blob; all 32 parse cleanly with no gaps but a zeroed trailer |
 | Each container holds one language's strings | Two English US containers exist and differ only in values; the rest align 1:1 with the TOC's 32 localisation assets |
 | The 9 lump CRCs | Enumerate every distinct lump CRC in a localisation container; nine appear, none of which are in `lump_types.h` |
-| Which lump is which | Sizes and consistency: one `u32` count; a blob of N NUL-terminated keys; a `u32[N]` offset table that indexes that blob; a second blob of NUL-terminated values; a `u32[N]` offset table into it; a `u32[N]` table that is all zeros everywhere; three hash/secondary tables |
+| Which lump is which | Sizes and consistency: one `u32` count; a blob of N NUL-terminated keys; a `u32[N]` offset table that indexes that blob; a second blob of NUL-terminated values; a `u32[N]` offset table into it; a `u32[N]` hash table; the same hashes sorted ascending; a `u16[N]` of entry indexes in hash order; and a flag byte per entry followed by 3N zero bytes |
+| The key hash is CRC-32, seeded with the polynomial | `0x06a58050` ships the hash of all 25,034 keys in every language, i.e. a ready-made oracle. A reflected CRC-32 seeded `0xEDB88320` with no final inversion reproduces all 25,034 of them with zero mismatches; `zlib.crc32` matches none |
+| Entry 0 is `INVALID`, the rest sort by UTF-16 code unit | Order agrees with C# `string.CompareOrdinal`, which differs from Python code point order above the BMP — the only way to tell which convention was meant |
+| The flags are not zero | 5,889 entries carry byte `2`, and the set is byte-identical in all 32 containers, so it is a property of the key. The keys look like voice-over cue names, but the meaning of `2` is unknown |
 | The value blob starts with a NUL sentinel | Across all 32 tables the minimum non-zero value offset is exactly 1, and offset 0 is never used. That is why `value_offset == 0` safely means *untranslated* |
 | All 32 tables share one byte-identical key list | Hash the key blob of every container; all 32 match |
 | `d/localization` is 281 LZ4 blocks | Read every block descriptor's mode byte; all 281 are mode 3 |
@@ -204,11 +207,13 @@ Stated plainly so nobody builds on it as fact.
   Spanish → `es-419` are the obvious pairs, and `rcextract/languages.py` marks
   them as `SHARED_SLOT_LANGUAGES` on that basis — but it is an inference from
   the arithmetic, not a recorded mapping.
-* **That a slot can simply be filled.** Writing back is plausible and the
-  format supports it, but no one has demonstrated it working. It requires
-  rebuilding every subsequent container, regenerating the offset tables,
-  patching the TOC `offset`/`size` fields and re-compressing the DSAR.
-  Overstrike and ripped_apart do all of that already.
+* **That a slot can simply be filled.** The format supports it and
+  `rcextract.build` now writes byte-identical containers, so the hard part is
+  done. What is *not* demonstrated is the game loading the result, because
+  there is no way to launch Rift Apart on the machine this was built on. The
+  descriptor constants the mod archive needs come from Overstrike rather than
+  from the game's own archives, so that is the one thing a test run on real
+  hardware would prove or refute — see [Mod archives](#mod-archives).
 * **GDeflate is not a problem for a text mod.** 62 of the archives in `d/`
   contain GDeflate blocks, which needs a native decoder that `rcextract` does
   not implement. But the three archives an Arabic mod must write are all pure
@@ -226,19 +231,71 @@ Stated plainly so nobody builds on it as fact.
 
 ---
 
-## 4. External references
+## 4. Mod archives
+
+`rcextract mod install` writes `d\mods\mod1`, adds one record to the `toc`, and
+repoints four asset entries at it. It is a reimplementation of what Overstrike
+does at install time, in Python, because Overstrike is Windows-only and .NET 7.
+
+Nothing in `d/localization` is opened, written or created. The `toc` is the only
+retail file touched, and it is backed up first and restored byte-for-byte on
+uninstall.
+
+### Measured
+
+Everything below was established by reading the shipped `toc` and is asserted
+in `tests/test_mod.py`:
+
+* the file is an 8-byte header (`magic 0x34E89035`, `u32` container length)
+  followed by a bare `1TAD` at base 8, and there are **284 bytes of zero slack**
+  past the declared length, which the writer preserves
+* `TocImage.to_bytes()` reproduces all 12,574,728 shipped bytes exactly,
+  trailer included
+* all 340,662 asset rows and all 147 archive records round-trip unchanged
+* an install changes **exactly two lumps** (`0x398abff0` archives,
+  `0x65bcf461` asset meta) and **exactly four asset rows**
+* the 32 localisation assets are groups 184, 224, 232 and 240 apart, one per
+  language, and 203 of the 256 groups are empty
+* A, B, C and D of an archive record are byte-identical across all 147 retail
+  archives: `0x2283B699040`, `0x2283B699040`, `0xBE26446B`, `0x7FFB`. They are
+  a load descriptor, not per-archive data — they do not encode size or offset
+* field E is a load-order bucket in units of `0x01000000`. It is `0` for 113
+  archives and non-zero only for the 34 audio archives, where
+  `d\wem.<lang>` and `d\soundbank.<lang>` share a bucket and buckets ascend with
+  archive index. `d\wem.ar` and `d\soundbank.ar` are in that list, which is the
+  shipped Arabic *voice-over*
+* a mod archive is **flat** — payloads concatenated with no DSAR wrapper and no
+  block directory, so the `toc`'s `(offset, size)` address the payload directly
+
+### Inherited from Overstrike, not derived
+
+`MOD_ARCHIVE_DESCRIPTOR` in `rcextract/mod.py` is
+`(0x26FB4987040, 0x26FB4987040, 0xE522446B, 0x7FFB, 0)`, copied from
+Overstrike's `TOC_I29.AddNewArchive`. It differs from the retail value in A, B
+and C, and its E is the default bucket. It is a load descriptor, and it is not
+fully understood — the difference is *believed* to be "flat and uncompressed"
+versus "LZ4 blocks", but that has not been established from the game's own data,
+because the game does not ship an uncompressed archive to compare against.
+
+**This is the main residual risk in the project.** Everything else is measured;
+these five numbers are borrowed from a loader whose mods are known to work, and
+a run on real hardware is what would confirm them.
+
+---
+
+## 5. External references
 
 | Project | Licence | Role |
 |---|---|---|
 | [ripped_apart](https://github.com/chaoticgd/ripped_apart) | MIT | Format reference for DSAR, `1TAD` and the TOC. Source of the generated lump-type table |
-| **Overstrike** | see project | Rift Apart mod loader. The thing you would use to load a patched archive. Not a dependency here |
+| **Overstrike** | see project | Rift Apart mod loader. Source of the mod-archive install layout and the five descriptor constants `rcextract.mod` reuses. Not a dependency, and not shipped — only its behaviour is reimplemented |
 | [python-lz4](https://github.com/jeffhammond/python-lz4) | Apache-2.0 / BSD-2-Clause | The one runtime dependency. `d/localization` cannot be read without it |
 
 No other third-party code is used.
 
 ---
 
-## 5. Game content
+## 6. Game content
 
 **No game files and no extracted game text are in this repository**, by
 licensing and by size — the archive is 30 MB and a full dump is roughly 50 MB

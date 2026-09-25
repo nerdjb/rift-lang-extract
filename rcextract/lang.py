@@ -13,10 +13,10 @@ Lumps used::
     0xa4ea55b2  u32[N]     key offsets into the key blob
     0x70a382b8  bytes      value blob: NUL-terminated localised strings
     0xf80deeb4  u32[N]     value offsets into the value blob; 0 = untranslated
-    0xb0653243  u32[N]     all zero in every retail language
+    0xb0653243  u8[N]      flag byte per entry, then 3N zero bytes
     0x06a58050  u32[N]     key hash table
-    0x0cd2cfe9  u32[N/2]   key hash overflow table
-    0xc43731b5  u32[N]     secondary key offsets
+    0xc43731b5  u32[N]     the same hashes, ascending
+    0x0cd2cfe9  u16[N]     entry indexes, in hash order
 
 The key blob and the index order line up 1:1, so a string can be addressed
 either by index or by key without consulting the offset tables.
@@ -26,6 +26,13 @@ standing for "no translation" and every real string starts at offset 1 or
 later.  That is what makes ``value_offset == 0`` a safe test for "untranslated"
 -- without the leading NUL, the first string would be indistinguishable from
 a missing one.  The key blob has no such sentinel.
+
+Entry 0 is always the key ``INVALID``; the rest are in UTF-16 code unit order
+(``string.CompareOrdinal``), which differs from Python's code point order for
+anything above the BMP.
+
+Writing is in :mod:`rcextract.build` -- it reproduces the serialiser closely
+enough that rebuilding any shipped container returns the identical bytes.
 """
 
 from __future__ import annotations

@@ -1,7 +1,8 @@
 # rcextract
 
 Get localisation strings out of an installed copy of **Ratchet & Clank: Rift
-Apart** (PC) as plain text you can diff, review and hand to a translator.
+Apart** (PC) as plain text you can diff, review and hand to a translator — and
+put a translation back as a mod file, without editing the game.
 
 Pure Python. No game content, no anti-tamper, no network, no mod loader. Point
 it at your own install.
@@ -29,7 +30,16 @@ Specifically, it:
 * **verifies itself** against the game files, so you know the output is
   complete and correctly ordered.
 
-It does **not** write strings back — see [below](#writing-strings-back).
+It also **writes back**, as a mod:
+
+```bash
+rcextract mod install --game "$GAME" -t my_translation.json
+```
+
+That writes a `d\mods\mod1` archive and repoints four entries in the game's
+asset index. It does **not** edit `d/localization` or any other game file in
+place, and `rcextract mod uninstall` puts the index back byte-for-byte. See
+[Installing a mod](#installing-a-mod).
 
 The interesting part: **the game ships four language slots it never fills in**,
 and one of them is almost certainly Arabic — the game has an Arabic voice
@@ -115,6 +125,9 @@ rcextract get     --game "$GAME" -l de -k UI_WEAPONS
 rcextract dump    --game "$GAME" -l 23    # empty slot -> blank template
 rcextract toc     --game "$GAME"          # the asset index
 rcextract verify  --game "$GAME"          # self-check every table
+
+rcextract mod install   --game "$GAME" -t ar.json   # install a translation
+rcextract mod uninstall --game "$GAME"             # remove it again
 ```
 
 `--game` can be dropped if you are already in the install directory. Languages
@@ -197,21 +210,53 @@ and the test pins that so the table cannot be silently misidentified. See
 This matters beyond licensing: the archive alone is 30 MB and a full dump is
 ~50 MB per language, so committing it would make the repo unusable anyway.
 
-## Writing strings back
+## Installing a mod
 
-**Not implemented, deliberately.** Rebuilding a language means re-laying out
-every container after it (they all shift), regenerating the offset tables
-against a new value blob, patching the TOC's `offset`/`size` entries, and
-re-compressing the DSAR. Two existing projects already do this and have the
-dependency-graph machinery for it:
+`rcextract mod` writes a **mod file** — a `d\mods\mod1` archive plus a
+`toc` with four entries repointed at it. It is what Overstrike does at install
+time, reimplemented in Python because Overstrike is Windows-only.
 
-* [ripped_apart](https://github.com/chaoticgd/ripped_apart) — C, MIT, the
-  reference for these formats
-* **Overstrike** — the Rift Apart mod loader, which is what you would actually
-  use to load a patched archive
+**No game file is edited in place.** `d/localization` is never opened, written
+or created; the `toc` is the only retail file touched, and it is backed up
+beforehand and restored byte-for-byte on uninstall.
 
-`rcextract` is a reader. The format notes above are written to be enough for
-someone to build the writer.
+```bash
+rcextract mod install --game "$GAME" -t my_translation.json
+rcextract mod uninstall --game "$GAME"          # back to byte-identical
+```
+
+`-t` takes a JSON object or a `KEY<TAB>value` TSV. Untranslated keys are left
+at offset 0, which is the format's own "fall back to English" sentinel, so a
+partial translation is safe and shows English for the rest.
+
+```bash
+rcextract mod install --game "$GAME" -t ar.json --dry-run   # change nothing
+rcextract mod install --game "$GAME" -t ar.json -s 23       # one slot, not four
+rcextract mod install --game "$GAME" -t ar.json --keep-english
+```
+
+By default it fills **all four empty slots** — ids 23, 28, 29 and 30. They are
+byte-identical and nothing in the shipped data records which one the game means
+by Arabic, so writing the same text into each removes the need to guess. The
+cost is a larger archive, nothing else. `-s` narrows it if you would rather
+test one.
+
+What it changes, asserted in `tests/test_mod.py`:
+
+| | |
+|---|---|
+| files written | `d/mods/mod1`, `toc`, `toc.orig` |
+| asset rows changed | exactly 4 (the localisation slots) |
+| TOC lumps changed | exactly 2 of 8 |
+| `d/localization` | untouched |
+| `uninstall` | restores the `toc` to the identical 12,574,728 bytes |
+
+**Unverified:** nobody has run the game with this. The five archive-descriptor
+constants in `rcextract/mod.py` are copied from Overstrike rather than derived
+from the game's own archives, and that is the one thing a run on real hardware
+would confirm. Everything else — the TOC rewrite, the four repointed rows, the
+containers, the byte-identical restore — is measured and tested. See
+[docs/SOURCES.md](docs/SOURCES.md#mod-archives).
 
 ## Sources
 
@@ -229,9 +274,15 @@ and was recovered by inspecting the game files.
   nine localisation lump CRCs are **not** in that table; they were recovered by
   inspection, and the generated file says so in its own docstring.
 * Everything about the **string tables themselves** — which lumps hold keys
-  versus values, the leading-NUL sentinel, the `group // 8` language join, the
-  32-slot language table, the four empty slots — was found by reading the
-  bytes, and is pinned by tests.
+  versus values, the leading-NUL sentinel, the key hash, the `group // 8`
+  language join, the 32-slot language table, the four empty slots — was found by
+  reading the bytes, and is pinned by tests.
+* The **mod-archive install layout** and the five archive-descriptor constants
+  `rcextract mod` uses come from **Overstrike**, the Rift Apart mod loader. No
+  code is taken; its behaviour is reimplemented. This is the one dependency that
+  is trusted rather than measured, and
+  [docs/SOURCES.md](docs/SOURCES.md#mod-archives) says exactly which numbers
+  and why.
 
 [docs/SOURCES.md](docs/SOURCES.md) has the full breakdown: which struct came
 from which upstream header, how each localisation finding was established and
@@ -245,20 +296,25 @@ Entertainment or Insomniac Games. You must own a copy of the game to use it.
 ## Tests
 
 ```bash
-python tests/test_formats.py       # 34 synthetic tests, no game needed
-RCEXTRACT_GAME="$GAME" python tests/test_integration.py   # 18 against a real install
+python -m unittest discover -s tests -p 'test_*.py'                       # synthetic, no game
+RCEXTRACT_GAME="$GAME" python -m unittest discover -s tests -p 'test_*.py'  # + 39 installer tests
 ```
 
 The synthetic tests build localisation containers in memory from known
 key/value lists and check the readers recover them exactly, including the
 place round-trips usually break: `%d%%`, `&quot;`, `<span class=…>`, `<br>`,
-`[BTN_A]` and CJK. The integration tests are skipped when no install is found.
+`[BTN_A]` and CJK. They also check the *writer* rebuilds all 32 shipped
+containers and the whole `toc` byte-for-byte, which is the precondition for
+everything in `rcextract mod` — if editing the `toc` changed a byte we did not
+mean to, no amount of care afterwards helps. The installer tests run against a
+sandbox copy of the real `toc` and are skipped when no install is found.
 
-Writing these found three real bugs: the `struct` layout for the DSAR block
+Writing these found four real bugs: the `struct` layout for the DSAR block
 descriptor is 32 bytes, not 40 (the `<` prefix suppresses padding), a shared
 argparse parent made `--game` silently vanish when it appeared before the
-subcommand, and `open_toc` leaked a file handle. All three are now pinned by
-tests.
+subcommand, `open_toc` leaked a file handle, and a mod built from a translated
+template silently leaked the template language's English into every key that
+had not been translated. All four are now pinned by tests.
 
 The provenance claim in [docs/SOURCES.md](docs/SOURCES.md) is itself tested:
 `TestLumpTypeProvenance` asserts the nine localisation CRCs are disjoint from
@@ -270,8 +326,8 @@ false after a regeneration.
 | Document | What it covers |
 |---|---|
 | This file | What the tool does, how to get it, how to use it |
-| [docs/FORMAT.md](docs/FORMAT.md) | The on-disk format: DSAR, `1TAD`, the TOC, the 9 localisation lumps, the 32-slot language table, string shapes. Written to be enough to build a *writer* |
-| [docs/SOURCES.md](docs/SOURCES.md) | Provenance of every claim: what came from ripped_apart, what was recovered by inspection, how each was checked, and what is still unproven |
+| [docs/FORMAT.md](docs/FORMAT.md) | The on-disk format: DSAR, `1TAD`, the TOC, the 9 localisation lumps, the 32-slot language table, string shapes, and how to write a container or a `toc` back |
+| [docs/SOURCES.md](docs/SOURCES.md) | Provenance of every claim: what came from ripped_apart, what from Overstrike, what was recovered by inspection, how each was checked, and what is still unproven |
 
 ## Licence
 

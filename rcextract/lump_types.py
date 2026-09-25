@@ -112,10 +112,10 @@ LUMP_LANG_VALUES    = 0x70a382b8  # NUL-separated localised string blob
 LUMP_LANG_COUNT     = 0xd540a903  # u32 string count (N)
 LUMP_LANG_VALUE_OFF = 0xf80deeb4  # u32[N] offsets into the value blob (0 = untranslated)
 LUMP_LANG_KEY_OFF   = 0xa4ea55b2  # u32[N] offsets into the key blob
-LUMP_LANG_ZERO      = 0xb0653243  # u32[N], all zero in every shipped language
+LUMP_LANG_ZERO      = 0xb0653243  # u8[N] flag byte per entry, then 3N zeros
 LUMP_LANG_KEY_HASH  = 0x06a58050  # u32[N] key hash table
-LUMP_LANG_HASH_OVF  = 0x0cd2cfe9  # u32[N/2] hash overflow table
-LUMP_LANG_KEY_ALT   = 0xc43731b5  # u32[N] secondary key offsets
+LUMP_LANG_KEY_ALT   = 0xc43731b5  # u32[N] the same hashes, ascending
+LUMP_LANG_HASH_OVF  = 0x0cd2cfe9  # u16[N] entry indexes, in hash order
 
 LUMP_LANGUAGE_KNOWN: dict[int, str] = {
     0x4d73cebd: 'Language Keys',          
@@ -123,10 +123,10 @@ LUMP_LANGUAGE_KNOWN: dict[int, str] = {
     0xd540a903: 'Language Count',         
     0xf80deeb4: 'Language Value Offsets', 
     0xa4ea55b2: 'Language Key Offsets',   
-    0xb0653243: 'Language Zero',          
+    0xb0653243: 'Language Flags',         
     0x06a58050: 'Language Key Hash',      
-    0x0cd2cfe9: 'Language Hash Overflow', 
-    0xc43731b5: 'Language Key Alt',       
+    0x0cd2cfe9: 'Language Sorted Indexes',
+    0xc43731b5: 'Language Sorted Hashes',  
 }
 
 # -- table of contents ------------------------------------------------

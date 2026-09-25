@@ -59,6 +59,7 @@ from __future__ import annotations
 import struct
 from typing import Iterable, Mapping, Sequence
 
+from .dat import serialize
 from .lump_types import (
     LUMP_LANG_COUNT,
     LUMP_LANG_HASH_OVF,
@@ -93,7 +94,7 @@ DATA_ORDER = (
     LUMP_LANG_VALUES,
 )
 
-#: Sections are aligned to this many bytes.
+#: Lumps are aligned to this many bytes.
 _ALIGN = 16
 
 #: Entry 0 is always this key, and it is always untranslated.
@@ -145,11 +146,6 @@ def ordinal_key(key: str) -> bytes:
 
 def _cstr(s: str) -> bytes:
     return s.encode("utf-8", "surrogateescape") + b"\x00"
-
-
-def _pad(n: int) -> bytes:
-    """Bytes needed to round `n` up to the section alignment."""
-    return b"\x00" * (-n % _ALIGN)
 
 
 # -- ordering -------------------------------------------------------------
@@ -250,35 +246,13 @@ def build_container(
     }
 
     # Header, then the lump directory, then the strings block, then payloads.
-    dir_start = 16 + 12 * len(DATA_ORDER)
-    cursor = dir_start + len(STRINGS_BLOCK)
-    cursor += len(_pad(cursor))
-
-    offsets: dict[int, int] = {}
-    for i, crc in enumerate(DATA_ORDER):
-        offsets[crc] = cursor
-        cursor += len(payloads[crc])
-        if i != len(DATA_ORDER) - 1:
-            cursor += len(_pad(cursor))
-
-    out = bytearray()
-    out += MAGIC
-    out += struct.pack("<I", LOCALIZATION_TYPE_CRC)
-    out += struct.pack("<I", cursor)          # file_size = end of last lump
-    out += struct.pack("<HH", len(DATA_ORDER), 0)
-    for crc in sorted(DATA_ORDER):
-        out += struct.pack("<III", crc, offsets[crc], len(payloads[crc]))
-    assert len(out) == dir_start
-    out += STRINGS_BLOCK
-    out += _pad(len(out))
-    for i, crc in enumerate(DATA_ORDER):
-        assert len(out) == offsets[crc], (crc, len(out), offsets[crc])
-        out += payloads[crc]
-        if i != len(DATA_ORDER) - 1:
-            out += _pad(len(out))
-    assert len(out) == cursor
-
-    return bytes(out)
+    # DATA_ORDER fixes the on-disk order; the directory is sorted by CRC.
+    return serialize(
+        ((crc, payloads[crc]) for crc in DATA_ORDER),
+        type_crc=LOCALIZATION_TYPE_CRC,
+        strings_block=STRINGS_BLOCK,
+        align=_ALIGN,
+    )
 
 
 def build_from_table(table, overrides: Mapping[str, str | None] | None = None) -> bytes:
