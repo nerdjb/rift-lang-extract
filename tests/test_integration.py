@@ -210,6 +210,37 @@ class TestCliAgainstRealArchive(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(buf.getvalue().strip(), "WAFFEN")
 
+    def test_every_subcommand_is_reachable(self):
+        """Smoke-test that each subcommand dispatches without raising.
+
+        A message-formatting bug once made ``list`` die with a NameError
+        three lines into its own output, after the useful part had already
+        been printed -- so it was easy to miss by eye.  Walking every
+        subcommand catches that class of mistake wherever it lives.
+        """
+        argv = {
+            "list": [],
+            "verify": [],
+            "get": ["-l", "de", "-k", "UI_WEAPONS"],
+            "dump": ["-l", "de"],
+            "toc": [],
+        }
+        for name, extra in argv.items():
+            with self.subTest(command=name):
+                rc, out = self.run_cli(name, *extra)
+                self.assertIn(rc, (0, 1), "%s exited %r" % (name, rc))
+                self.assertTrue(out.strip(), "%s printed nothing" % name)
+
+    def test_list_explains_the_shared_slot_languages(self):
+        """`list` must not just name the four untranslated languages; it has to
+        account for all six untranslated LANGUAGE_* keys, or the counts do not
+        add up to four empty slots."""
+        rc, out = self.run_cli("list")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("Canadian French", out)
+        self.assertIn("Mexican Spanish", out)
+        self.assertIn("Arabic", out)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

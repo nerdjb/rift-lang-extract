@@ -53,10 +53,12 @@ id   code     offset      name               keys   strings  notes
 30   slot30   55340523    (unassigned)       25034  0        empty in retail builds
 
 empty slots (no strings): 23, 28, 29, 30
-  Reserved language slots. The four languages with LANGUAGE_* string keys
-  and a voice-over logo in the game config, but no text table in retail
-  builds, are: Arabic, Indonesian, Thai, Vietnamese.
-  Filling an empty slot is how a new language gets added.
+  Reserved language slots. Six of the 33 language names the game carries have
+  no text table, but only four slots are empty, so two of the six reuse a
+  shipped slot (Canadian French -> fr, Mexican Spanish -> es-419).
+  The four that need a slot of their own: Arabic, Indonesian, Thai, Vietnamese.
+  Only Arabic has any real support in the build -- it ships a logo texture and
+  a 560 MB voice bank. Filling an empty slot is how a new language gets added.
 ```
 
 ---
@@ -242,7 +244,7 @@ Entertainment or Insomniac Games. You must own a copy of the game to use it.
 
 ```bash
 python tests/test_formats.py       # 34 synthetic tests, no game needed
-RCEXTRACT_GAME="$GAME" python tests/test_integration.py   # 16 against a real install
+RCEXTRACT_GAME="$GAME" python tests/test_integration.py   # 18 against a real install
 ```
 
 The synthetic tests build localisation containers in memory from known

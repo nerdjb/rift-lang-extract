@@ -24,7 +24,13 @@ from .dat import DatError
 from .dsar import DsarError
 from .game import GameNotFound, find_game_root, load_localization
 from .lang import LocalizationError, StringTable
-from .languages import EMPTY_SLOTS, resolve, unshipped_names
+from .languages import (
+    EMPTY_SLOTS,
+    UNSHIPPED_LANGUAGES,
+    resolve,
+    shared_slot_names,
+    unshipped_names,
+)
 from .toc import Toc
 
 PROG = "rcextract"
@@ -73,10 +79,13 @@ def cmd_list(args) -> int:
     empty = sorted(t.language_id for t in tables if not t.translated_count)
     if empty:
         print("empty slots (no strings): %s" % ", ".join(map(str, empty)))
-        print("  Reserved language slots. The four languages with LANGUAGE_* string")
-        print("  keys and a voice-over logo in the game config, but no text table")
-        print("  in retail builds, are: %s." % unshipped_names())
-        print("  Filling an empty slot is how a new language gets added.")
+        print("  Reserved language slots. Six of the 33 language names the game")
+        print("  carries have no text table, but only %d slots are empty, so two of" % len(empty))
+        print("  the six reuse a shipped slot (%s)." % shared_slot_names())
+        print("  The %d that need a slot of their own: %s."
+              % (len(UNSHIPPED_LANGUAGES), unshipped_names()))
+        print("  Only Arabic has real support in the build: it ships a logo texture")
+        print("  and a 560 MB voice bank. Filling a slot is how a language is added.")
     return 0
 
 

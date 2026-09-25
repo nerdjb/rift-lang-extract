@@ -102,11 +102,25 @@ for _l in LANGUAGES:
 #: Slots that are present in the archive but carry no strings.
 EMPTY_SLOTS: tuple[int, ...] = tuple(l.id for l in LANGUAGES if not l.shipped)
 
-#: Languages that have ``LANGUAGE_*`` string keys and a voice-over logo in the
-#: game config, but no shipped text table in retail builds.  There are exactly
-#: four such keys and exactly four empty slots, so these are the languages the
-#: empty slots are reserved for.  Which slot maps to which language is not
-#: recorded in the data -- the four slots are indistinguishable until filled.
+#: Languages with a ``LANGUAGE_*`` string key but no text table of their own in
+#: retail builds, and which therefore do not consume one of the four empty
+#: slots.  Six of the 33 language names the game carries are untranslated, and
+#: only four slots are empty -- so two of the six must be display labels that
+#: share a slot with a shipped variant.  See ``SHARED_SLOT_LANGUAGES``.
+#:
+#: The support for these four differs sharply, and only the first is a real
+#: localisation gap:
+#:
+#: * Arabic has a logo texture (``RCRA_AR_logo.texture``, paired 1:1 with
+#:   ``kLanguageArabic`` in the game config), a full voice bank
+#:   (``d/wem.ar``, 560 MB -- the same size class as ``d/wem.us``) and a
+#:   ``LANGUAGE_ARABIC`` string key.  Everything except the text ships.
+#: * Indonesian, Thai and Vietnamese have *only* the string key.  They have no
+#:   ``kLanguage*`` entry anywhere in ``d/config``, no logo, no audio.  They
+#:   are names the game can print, for slots that were reserved and left empty.
+#:
+#: Which slot maps to which language is not recorded in the data -- the four
+#: empty slots are byte-identical to each other.
 UNSHIPPED_LANGUAGES: tuple[tuple[str, str], ...] = (
     ("ar", "Arabic"),
     ("id", "Indonesian"),
@@ -114,7 +128,13 @@ UNSHIPPED_LANGUAGES: tuple[tuple[str, str], ...] = (
     ("vi", "Vietnamese"),
 )
 
-#: Languages that reuse a slot shipped for a sibling variant.
+#: Languages with a ``LANGUAGE_*`` string key but no text table of their own,
+#: that most likely reuse a slot shipped for a sibling variant.  Canadian
+#: French falls back to ``fr`` and Mexican Spanish to ``es-419``.  This is an
+#: inference: the game prints both names, but the count of untranslated names
+#: (six) exceeding the count of empty slots (four) requires at least two of
+#: them to share, and these are the two pairs that share unambiguously by
+#: script and market.
 SHARED_SLOT_LANGUAGES: tuple[tuple[str, str], ...] = (
     ("fr-CA", "Canadian French"),
     ("es-MX", "Mexican Spanish"),
@@ -124,6 +144,11 @@ SHARED_SLOT_LANGUAGES: tuple[tuple[str, str], ...] = (
 def unshipped_names() -> str:
     """``"Arabic, Indonesian, Thai, Vietnamese"`` for display."""
     return ", ".join(name for _, name in UNSHIPPED_LANGUAGES)
+
+
+def shared_slot_names() -> str:
+    """``"Canadian French, Mexican Spanish"`` for display."""
+    return ", ".join(name for _, name in SHARED_SLOT_LANGUAGES)
 
 
 def resolve(token: str) -> Language:

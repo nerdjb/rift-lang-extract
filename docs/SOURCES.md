@@ -93,6 +93,53 @@ known-good expectations. `docs/FORMAT.md` documents the result.
 | The 22-byte zero trailer | Follows the last container to the end of the decompressed archive |
 | The string-shape inventory | Counted across all 32 tables: `&quot;`, `<ts="…">`, `[BTN_…]`, `<br>`, `%d`, `<span class=…>`, `TBW`, `&emsp;`, `&ensp;`, `%.2f`. `<color=…>`, `<size=…>`, `&amp;`, `&apos;`, `\n`, `\t` and `%f` do **not** occur |
 
+### The Arabic logo: an image, not text
+
+This came up often enough to be worth stating precisely, because it is easy to
+assume the logo is part of the localisation data. **It is not.**
+
+`d/config` is a 48-block LZ4 DSAR that decompresses to 11,624,448 bytes. Near
+offset 11,330,000 it holds a table of logo textures, each paired 1:1 with the
+language it belongs to, in file order:
+
+| texture path (in `d/config`) | language identifier |
+|---|---|
+| `ui/loaded/authored/_art/textures/RCRA_Logo_CN.texture` | `kLanguageChineseSimplified` |
+| `ui/loaded/authored/_art/textures/RCRA_Logo_JP.texture` | `kLanguageJapanese` |
+| `ui/loaded/authored/_art/textures/RCRA_AR_logo.texture` | **`kLanguageArabic`** |
+| `ui/loaded/authored/_art/textures/RCRA_BR_logo.texture` | `kLanguageBrPortuguese` |
+| `ui/loaded/authored/_art/textures/RCRA_CAN_logo.texture` | `kLanguageCaFrench` |
+| `ui/loaded/authored/_art/textures/RCRA_ESP_LATAM_logo.texture` | `kLanguageLaSpanish` |
+| `ui/loaded/authored/_art/textures/RCRA_PT_logo.texture` | `kLanguagePortuguese` |
+| `ui/loaded/authored/_art/textures/RCRA_RUS_logo.texture` | `kLanguageRussian` |
+| `ui/loaded/authored/_art/textures/RCRA_TUR_logo.texture` | `kLanguageTurkish` |
+
+`kLanguageArabic` occurs **exactly once** in the whole of `d/config` — only in
+this table. It is not in the main language enum, and there is no
+`kLanguageIndonesian`, `kLanguageThai` or `kLanguageVietnamese` anywhere.
+
+So:
+
+* **The logo is artwork, not text.** The `.texture` extension is the game's
+  image format. `d/tex_ui` holds 2,099 texture assets (containers with
+  `asset_type_crc == 0x8f53a199`, `RA_ASSET_TYPE_TEXTURE`), and the logo
+  textures live there. A logo is a bitmap; there is no `LANGUAGE_*` key for it
+  and it is not one of the 25,034 keys.
+* **It already exists.** You do not need to create an Arabic logo. The build
+  ships one, already wired to `kLanguageArabic`.
+* **The audio already exists too.** `d/wem.ar` (560,779,264 bytes) and
+  `d/soundbank.ar` (77,955,072) are full Wwise voice banks, the same size class
+  as their `d/wem.us` / `d/soundbank.us` counterparts. (`wem` is the Wwise
+  Event Manager extension; `.ar` here is the Arabic language code, not an
+  archive format.)
+* **The `LANGUAGE_ARABIC` string key is translated in all 28 shipped
+  tables** — German has `ARABISCH`, French `ARABE`, Italian `ARABO`, Danish
+  `ARABISK`. Every language can already print the word "Arabic".
+
+Everything about Arabic in this build ships **except the text**. That is the
+gap, and it is a gap in one direction only: the localisation table, not the
+branding and not the audio.
+
 ### How the results were checked
 
 Format reverse engineering goes wrong quietly, so every claim above is pinned
@@ -101,7 +148,7 @@ by a test or a command:
 ```bash
 rcextract verify                            # 32 containers vs the TOC, no misidentification
 python tests/test_formats.py                # 34 tests, synthetic data, no game needed
-RCEXTRACT_GAME="$GAME" python tests/test_integration.py   # 16 tests against a real install
+RCEXTRACT_GAME="$GAME" python tests/test_integration.py   # 18 tests against a real install
 ```
 
 Three of those tests found real bugs during development, which is the point of
@@ -134,11 +181,18 @@ Stated plainly so nobody builds on it as fact.
 
 * **Which empty slot is Arabic.** The four empty slots (23, 28, 29, 30) are
   byte-identical to each other, so the data cannot distinguish them. What the
-  data *does* show: the game config declares Arabic, Indonesian, Thai and
-  Vietnamese with `LANGUAGE_*` keys and voice-over logos, exactly four
-  languages, matching exactly four empty slots. The set matches; the
-  assignment does not. Settling it needs a probe string written into one slot
-  and the game launched.
+  data *does* show is that Arabic is the one empty language with real support
+  in the build (logo, voice bank, config entry — see
+  [The Arabic logo](#the-arabic-logo-an-image-not-text)). Which of the four
+  slot numbers it is, is not recorded anywhere. Settling it needs a probe
+  string written into one slot and the game launched.
+* **That four named languages map to the four empty slots.** Six of the 33
+  `LANGUAGE_*` keys have no text table: Arabic, Canadian French, Indonesian,
+  Thai, Vietnamese, Mexican Spanish. Six names, four slots, so at least two
+  must share a slot with a shipped variant. Canadian French → `fr` and Mexican
+  Spanish → `es-419` are the obvious pairs, and `rcextract/languages.py` marks
+  them as `SHARED_SLOT_LANGUAGES` on that basis — but it is an inference from
+  the arithmetic, not a recorded mapping.
 * **That a slot can simply be filled.** Writing back is plausible and the
   format supports it, but no one has demonstrated it working. It requires
   rebuilding every subsequent container, regenerating the offset tables,
