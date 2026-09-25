@@ -339,6 +339,57 @@ class ReversalTests(unittest.TestCase):
     def test_br_stays_between_the_same_two_lines(self):
         self.assertEqual(reverse_blocks("أب<br>ج"), "بأ<br>ج")
 
+    # -- newlines ----------------------------------------------------------
+    #
+    # Encoding a whole multi-line string as one paragraph reverses the *lines*
+    # along with the words inside them: the game draws row by row, so line two
+    # would land on row one.  This is invisible in the shipped data, which uses
+    # <br> and contains no \n at all, but a translation file is hand-edited JSON
+    # and a literal newline there is one keystroke away.
+    def test_each_newline_is_encoded_on_its_own_and_the_order_survives(self):
+        # Three lines, each reversed internally, lines kept top to bottom.
+        # Spelled by escape: the first line starts with alef-with-hamza (أ), and
+        # typing that by eye into an expected value is how a test starts
+        # asserting the wrong string.
+        three = "\u0623\u0628\n\u062c\u062f\n\u0647\u0632"
+        self.assertEqual(reverse_blocks(three), "\u0628\u0623\n\u062f\u062c\n\u0632\u0647")
+
+    def test_a_newline_never_swaps_two_lines(self):
+        # Encoding "ab\ncd" as one block reversed the runs as a whole, and the
+        # gap rule correctly keeps the \n its own run between two Arabic runs --
+        # which is exactly why the reversal moved it to the middle of a flipped
+        # pair instead of leaving it where it was written.
+        two = "\u0623\u0628\n\u062c\u062f"
+        self.assertEqual(reverse_blocks(two), "\u0628\u0623\n\u062f\u062c")
+
+    def test_newlines_are_neither_added_nor_lost(self):
+        for text in ("أب\nجد", "\nأب", "أب\n", "أب\n\nجد", "plain\nlines"):
+            self.assertEqual(reverse_blocks(text).count("\n"), text.count("\n"),
+                             repr(text))
+
+    def test_a_line_with_no_arabic_is_left_alone(self):
+        self.assertEqual(reverse_blocks("PULSE 3D™\n3D noises"),
+                         "PULSE 3D™\n3D noises")
+
+    def test_markup_and_newlines_do_not_interfere(self):
+        # Each <br> half is reversed inside its own line; the \n is a separator
+        # the encoder never sees, and the tag never moves.
+        text = "\u0623\u0628<br>\u062c\u062f\n\u0647\u0632"
+        self.assertEqual(reverse_blocks(text), "\u0628\u0623<br>\u062f\u062c\n\u0632\u0647")
+
+    def test_a_tag_split_by_a_newline_survives_untouched(self):
+        # Unreachable in this game's data (no shipped string contains \n, and no
+        # tag does), but the failure mode is worth pinning: an unmatchable tag
+        # must pass through as text rather than being reversed into garbage.
+        self.assertEqual(reverse_blocks("<sp\nan>"), "<sp\nan>")
+
+    def test_collect_runs_agrees_when_a_string_has_newlines(self):
+        # encode() shapes what collect_runs found; if the two disagreed about
+        # where an Arabic run ends, encode() would raise on the unseen run.
+        for text in ("أب\nجد", "أب \n جد", "أب\nPULSE 3D™"):
+            self.assertEqual(collect_runs([text]), collect_runs([text.replace("\n", " ")]),
+                             repr(text))
+
     def test_latin_keeps_its_order_inside_an_rtl_paragraph(self):
         # The Unicode bidi algorithm keeps an LTR run logical, so "Open" must
         # still read "Open" when the line is drawn right to left -- and the gap

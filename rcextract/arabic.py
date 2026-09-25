@@ -237,24 +237,43 @@ def encode_paragraph(paragraph: str, encode_run: Callable[[str], str]) -> str:
 def encode_string(text: str, encode_run: Callable[[str], str]) -> str:
     """Encode a whole string, leaving every tag exactly where it was written.
 
-    Tags split the string into blocks, and each block is encoded on its own.
-    That is what makes the two awkward cases come out right without any bidi
-    arithmetic of our own:
+    Every visual line is encoded on its own and the lines are rejoined in their
+    original top-to-bottom order.  That per-line boundary is load-bearing: the
+    encoder's whole job is to reverse a paragraph so that a left-to-right
+    renderer draws it right to left, and a paragraph that spans lines would have
+    its *lines* reversed along with the words inside them.  ``"أول\\nثانٍ"``
+    encoded as one block comes back as ``ثانٍ`` on the first row and ``أول`` on
+    the second -- the text reads correctly and the paragraphs read backwards,
+    which is worse than a crash because nothing complains.
+
+    This game does not use ``\\n`` (line breaks are ``<br>`` tags, and tags are
+    handled separately below), but the translation is read from a hand-edited
+    JSON where a literal newline costs nothing to type, so the guarantee is made
+    here rather than assumed.  It costs nothing when there is no newline.
+
+    Within a line, tags split the line into blocks and each block is encoded on
+    its own, which handles the two awkward cases without any bidi arithmetic of
+    our own:
 
     * across a ``<br>``, each line is reversed internally and the lines keep
       their order, which is what the game wants -- it draws the lines itself;
     * an opening and closing ``<span>`` stay in place around text that is
       reversed between them, so the markup cannot be torn apart by the reversal.
     """
+    return "\n".join(_encode_line(line, encode_run) for line in text.split("\n"))
+
+
+def _encode_line(line: str, encode_run: Callable[[str], str]) -> str:
+    """Encode one line of text, with no newline in it, into visual order."""
     out = []
     pos = 0
-    for m in TAG_RE.finditer(text):
+    for m in TAG_RE.finditer(line):
         if m.start() > pos:
-            out.append(encode_paragraph(text[pos:m.start()], encode_run))
+            out.append(encode_paragraph(line[pos:m.start()], encode_run))
         out.append(m.group(0))
         pos = m.end()
-    if pos < len(text):
-        out.append(encode_paragraph(text[pos:], encode_run))
+    if pos < len(line):
+        out.append(encode_paragraph(line[pos:], encode_run))
     return "".join(out)
 
 

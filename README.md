@@ -446,6 +446,22 @@ and the word it follows ends up on the far side of the number. So a gap is
 broken out as a run of its own exactly when Arabic is touching it, and left
 inside the run when it is only separating two pieces of one Latin phrase.
 
+**5. A multi-line string is encoded line by line, never as one block.** The
+encoder reverses a paragraph so a left-to-right renderer draws it right to
+left — and if the "paragraph" spans several visual lines, the *lines* get
+reversed along with the words inside them: line two lands on row one, and the
+text reads correctly while the stanzas read backwards. Nothing crashes and
+nothing logs; the box just looks like the translator numbered things wrong. So
+`encode_string` splits on `\n`, encodes each line independently, and rejoins
+them top-to-bottom.
+
+This game's shipped strings contain no `\n` at all — line breaks are `<br>`
+tags, which sit outside the paragraph blocks and were never at risk. But the
+input to a build is hand-edited JSON where a literal newline is one keystroke
+away, and a reshaper built on `arabic_reshaper` + `python-bidi` has exactly this
+bug when handed a whole multiline string, so the guarantee lives in the encoder
+rather than in each caller's discipline.
+
 #### The font input is not optional
 
 The tool needs the **retail** Proxima Nova, because `extract_ui_fonts` reads
@@ -847,10 +863,10 @@ python -m unittest discover -s tests -p 'test_*.py'                        # syn
 RCEXTRACT_GAME="$GAME" python -m unittest discover -s tests -p 'test_*.py'  # + the real install
 ```
 
-231 tests. 52 need a real install and 14 more need `fonttools` + `uharfbuzz` +
+238 tests. 52 need a real install and 14 more need `fonttools` + `uharfbuzz` +
 the Noto cut, so a machine with neither extras nor the game still gets a green
-run (`Ran 222 ... OK (skipped=66)`). With a game present the suite reports
-`Ran 231 ... OK (skipped=4)`; those four are assertions about the *retail* build
+run (`Ran 229 ... OK (skipped=66)`). With a game present the suite reports
+`Ran 238 ... OK (skipped=4)`; those four are assertions about the *retail* build
 — which containers are empty, and how container offsets join to language ids —
 and they are skipped rather than bent
 when a mod has repointed those slots, because the join they rely on no longer
@@ -879,7 +895,7 @@ checks is the whole safety argument, by resolving the encoded strings the way
 the game will, one glyph per codepoint, and requiring the HarfBuzz glyph
 sequence back.
 
-Writing these found fifteen real bugs. The first six are in the container code:
+Writing these found sixteen real bugs. The first six are in the container code:
 
 - the `struct` layout for the DSAR block descriptor is 32 bytes, not 40 (`<` in
   a `struct` format suppresses padding);
@@ -921,6 +937,13 @@ Plus three in the suite and the module it tests:
   "no such font file" — and one test that needed no font at all errored instead
   of skipping. The path check now comes first, which is both the better error and
   the one the test could make a promise about;
+- `encode_string` reversed a multiline string as a single paragraph, so the
+  visual **lines traded places**: `\u0623\u0628\n\u062c\u062f` encoded with the second
+  line first. Invisible in shipped data, which breaks lines with `<br>` and
+  contains no `\n` at all — but a hand-edited JSON is one keystroke from
+  hitting it, and a reshaper that gets the whole block (the common
+  `arabic_reshaper` + `get_display` usage) has the same bug. Each line is now
+  encoded alone and rejoined top-to-bottom, with six tests pinning it;
 - `dump -l en-US` wrote a 25,034-row **blank template** and said "fill it in"
   once a mod was installed. See [`dump`](#dump): with the toc repointed, the
   English slot's id is a guess, and "no strings" means "wrong container" rather
