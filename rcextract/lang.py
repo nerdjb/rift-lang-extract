@@ -73,8 +73,12 @@ class StringTable:
     flags: list[int] = field(default_factory=list, repr=False)
     """Per-entry flag byte (lump 0xb0653243).
 
-    Zero throughout every retail language except the two Portuguese ones, so
-    a writer must carry it through rather than assume zero.
+    Not all zero: 5,889 of the 25,034 keys carry the value 2, and that set is
+    byte-identical in all 32 retail containers -- so it is a property of the
+    key, not of the language.  (An earlier note here claimed the nonzero set
+    was the two Portuguese languages; that was wrong, and measured across all
+    32 containers.)  What 2 means is unknown.  A writer must carry this
+    through rather than assume zero, or those entries change silently.
     """
     _index: dict[str, int] = field(default_factory=dict, repr=False)
 
