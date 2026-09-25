@@ -1,0 +1,38 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Packaging
+build/
+dist/
+*.egg-info/
+
+# Environments
+.venv/
+venv/
+
+# ---------------------------------------------------------------------------
+# Extracted game data.
+#
+# rcextract's output is verbatim game text: copyrighted, and around 50 MB per
+# language.  It is deliberately not versioned here.  Regenerate it with:
+#
+#     rcextract dump --game "$GAME" -l en-US -o en_US.tsv
+#
+# If you want to version your *own translations*, put them in translations/
+# and re-include that path at the bottom of this file.
+# ---------------------------------------------------------------------------
+*.dsar
+*.tsv
+*.json
+!translations/
+toc.bin
+*.localization
+rcextract_*
+
+# Editors / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/

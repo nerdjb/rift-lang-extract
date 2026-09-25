@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rcextract"
+version = "1.0.0"
+description = "Read localisation strings out of an installed copy of Ratchet & Clank: Rift Apart (PC)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+keywords = ["ratchet-and-clank", "rift-apart", "localization", "dsar", "reverse-engineering"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Games/Entertainment",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+# d/localization is 281 blocks of LZ4, so this is a hard requirement.
+# The pure-container tests (tests/test_formats.py) do not need it, but
+# nothing useful does.
+dependencies = ["lz4>=4.0"]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[project.scripts]
+rcextract = "rcextract.cli:main"
+
+[tool.setuptools]
+packages = ["rcextract"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
